@@ -30,6 +30,18 @@ static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
 
+/* Ordered list of events to be fired by the timer. */
+static struct list timer_list;
+
+/* Timer list element used to hold a sleeping thread. */
+struct timer_list_elem
+  {
+    struct list_elem elem;              /* List element. */
+    struct semaphore semaphore;         /* Semaphore for putting the thread
+                                           to sleep. */
+    int64_t fire_ticks;                 /* Firing time (in ticks). */
+  };
+
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
 void
@@ -37,6 +49,7 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+  list_init (&timer_list);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -84,16 +97,42 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+/* Compares the firing times of two list elements A and B. Returns true if
+   firing time of A is less than B, false otherwise. */
+bool
+list_elem_compare (const struct list_elem *a, const struct list_elem *b,
+                   void *aux UNUSED)
+{
+  int64_t a_ticks
+      = (list_entry (a, struct timer_list_elem, elem))->fire_ticks;
+  int64_t b_ticks
+      = (list_entry (b, struct timer_list_elem, elem))->fire_ticks;
+  return (a_ticks < b_ticks) ? true : false;
+}
+
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
 timer_sleep (int64_t ticks) 
 {
+  enum intr_level old_level;
+  if (ticks <= 0)
+    return;
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+
+  /* Prepare new timer list element. */
+  struct timer_list_elem new_sleeper;
+  sema_init (&new_sleeper.semaphore, 0);
+  new_sleeper.fire_ticks = start + ticks;
+  
+  /* Add timer list element to timer list and sleep. */
+  old_level = intr_disable ();
+  list_insert_ordered (&timer_list, &new_sleeper.elem,
+                       list_elem_compare, NULL);
+  intr_set_level (old_level);
+  sema_down (&new_sleeper.semaphore);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -171,6 +210,31 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
+
+  if (!list_empty (&timer_list))
+    {
+	  /* Read front element's firing time. */
+      struct timer_list_elem *front = list_entry (
+	      list_begin (&timer_list), struct timer_list_elem, elem);
+	  int64_t front_elem_ticks = front->fire_ticks;
+
+	  /* If the front element's firing time is this tick, wake it up. */
+      while (ticks == front_elem_ticks)
+        {
+          list_pop_front (&timer_list);
+          sema_up (&front->semaphore);
+          if (!list_empty (&timer_list))
+            {
+			  front = list_entry (
+			      list_begin(&timer_list), struct timer_list_elem, elem);
+			  front_elem_ticks = front->fire_ticks;
+			}
+		  /* Break at first firing time that is not this tick. */
+          else
+            break;
+        }
+    }
+
   thread_tick ();
 }
 

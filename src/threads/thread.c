@@ -182,7 +182,9 @@ thread_create (const char *name, int priority,
 
   /* Initialize thread. */
   init_thread (t, name, priority);
+  #ifdef USERPROG
   t->parent_tid = thread_current ()->tid;
+  #endif
   tid = t->tid = allocate_tid ();
 
   /* Prepare thread for first run by initializing its stack.
@@ -470,6 +472,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
+  #ifdef USERPROG
   t->clean_exit = false;
   t->exit_status = -1;
   list_push_back (&all_list, &t->allelem);
@@ -480,6 +483,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->is_user_process = false;         /* Set to false by default. */
   t->fd_counter = 1;
   list_init (&t->open_files);
+  #endif
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
