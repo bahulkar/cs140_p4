@@ -9,15 +9,17 @@
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
+/*Length of index array of an inode. */
+#define INDEX_ARRAY_LENGTH 125
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
   {
-    block_sector_t start;               /* First data sector. */
-    off_t length;                       /* File size in bytes. */
-    unsigned magic;                     /* Magic number. */
-    uint32_t unused[125];               /* Not used. */
+    off_t length;                         /* File size in bytes. */
+    block_sector_t index[INDEX_ARRAY_LENGTH]; /* Index array. */
+    block_sector_t single_index;          /* Single index. */
+    block_sector_t double_index;          /* Double index. */
   };
 
 /* Returns the number of sectors to allocate for an inode SIZE
@@ -48,7 +50,7 @@ byte_to_sector (const struct inode *inode, off_t pos)
 {
   ASSERT (inode != NULL);
   if (pos < inode->data.length)
-    return inode->data.start + pos / BLOCK_SECTOR_SIZE;
+    return inode->data.index[pos / BLOCK_SECTOR_SIZE];
   else
     return -1;
 }
@@ -86,20 +88,29 @@ inode_create (block_sector_t sector, off_t length)
     {
       size_t sectors = bytes_to_sectors (length);
       disk_inode->length = length;
-      disk_inode->magic = INODE_MAGIC;
-      if (free_map_allocate (sectors, &disk_inode->start)) 
+      //TODO - this is a temporary assert
+      ASSERT(sectors <= INDEX_ARRAY_LENGTH);
+
+      if (sectors > 0)
         {
-          block_write (fs_device, sector, disk_inode);
-          if (sectors > 0) 
+          static char zeros[BLOCK_SECTOR_SIZE];
+          size_t i;
+
+          for (i = 0; i < sectors; i++)
             {
-              static char zeros[BLOCK_SECTOR_SIZE];
-              size_t i;
-              
-              for (i = 0; i < sectors; i++) 
-                block_write (fs_device, disk_inode->start + i, zeros);
+              if (free_map_allocate (1, &disk_inode->index[i]))
+                {
+                  block_write (fs_device, disk_inode->index[i], zeros);
+                }
+              else
+                {
+                  free (disk_inode);
+                  return false;
+                }
             }
-          success = true; 
-        } 
+        }
+      block_write (fs_device, sector, disk_inode);
+      success = true;
       free (disk_inode);
     }
   return success;
@@ -163,6 +174,7 @@ inode_get_inumber (const struct inode *inode)
 void
 inode_close (struct inode *inode) 
 {
+  uint32_t i;
   /* Ignore null pointer. */
   if (inode == NULL)
     return;
@@ -177,10 +189,11 @@ inode_close (struct inode *inode)
       if (inode->removed) 
         {
           free_map_release (inode->sector, 1);
-          free_map_release (inode->data.start,
-                            bytes_to_sectors (inode->data.length)); 
+          for (i = 0; i < bytes_to_sectors (inode->data.length); i++)
+            {
+              free_map_release (inode->data.index[i], 1);
+            }
         }
-
       free (inode); 
     }
 }
