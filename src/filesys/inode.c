@@ -663,13 +663,13 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
   uint8_t *bounce = NULL;
-  const uint32_t current_upper_length = (DIV_ROUND_UP(inode_length (inode), BLOCK_SECTOR_SIZE)) * BLOCK_SECTOR_SIZE;
+  const off_t current_upper_length = (DIV_ROUND_UP(inode_length (inode), BLOCK_SECTOR_SIZE)) * BLOCK_SECTOR_SIZE;
 
   if (inode->deny_write_cnt)
     return 0;
 
   /* Check if file growth is needed and accordingly grow it. */
-  if (((offset + size) >= inode_length (inode)) && ((offset + size) >= current_upper_length)) 
+  if (((offset + size) > inode_length (inode)) && ((offset + size) > current_upper_length)) 
     {
       if (!grow_file (inode, size, offset)) 
         {
