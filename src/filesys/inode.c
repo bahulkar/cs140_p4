@@ -9,8 +9,16 @@
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
-/*Length of index array of an inode. */
-#define INDEX_ARRAY_LENGTH 125
+/* Length of index array of an inode. */
+#define INDEX_ARRAY_LENGTH (125)
+/* Maximum sector entries that can fit in an single index inode. */
+#define MAX_SECTOR_ENTRIES_PER_INODE (BLOCK_SECTOR_SIZE / sizeof (block_sector_t))
+/* Number of bytes addressable by a second level inode. */
+#define SECONDARY_INODE_BYTES (MAX_SECTOR_ENTRIES_PER_INODE * BLOCK_SECTOR_SIZE)
+/* Beyond this length Single Index needs to be used. */
+#define SINGLE_INDEX_THRESHOLD ((INDEX_ARRAY_LENGTH * BLOCK_SECTOR_SIZE))
+/* Beyond this length Double Index needs to be used. */
+#define DOUBLE_INDEX_THRESHOLD (SINGLE_INDEX_THRESHOLD + (MAX_SECTOR_ENTRIES_PER_INODE * BLOCK_SECTOR_SIZE))
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
@@ -48,9 +56,36 @@ struct inode
 static block_sector_t
 byte_to_sector (const struct inode *inode, off_t pos) 
 {
+  block_sector_t single_index[MAX_SECTOR_ENTRIES_PER_INODE];
+  block_sector_t double_index[MAX_SECTOR_ENTRIES_PER_INODE];
   ASSERT (inode != NULL);
   if (pos < inode->data.length)
-    return inode->data.index[pos / BLOCK_SECTOR_SIZE];
+      if (pos < SINGLE_INDEX_THRESHOLD) 
+        {
+          return inode->data.index[pos / BLOCK_SECTOR_SIZE];
+        }
+      else
+        {
+          if (pos < DOUBLE_INDEX_THRESHOLD) 
+            {
+              block_sector_t first_level_offset;
+              first_level_offset = (pos - SINGLE_INDEX_THRESHOLD) / BLOCK_SECTOR_SIZE;
+              block_read (fs_device, inode->data.single_index, &single_index);
+              return single_index[first_level_offset];
+            }
+          else
+            {
+              block_sector_t offset = pos - DOUBLE_INDEX_THRESHOLD;
+              block_sector_t first_level_offset;
+              block_sector_t second_level_offset;
+              first_level_offset = offset / (SECONDARY_INODE_BYTES);
+              block_read (fs_device, inode->data.double_index, &single_index);
+              block_read (fs_device, single_index[first_level_offset], &double_index);
+              second_level_offset = (offset % (SECONDARY_INODE_BYTES)) / BLOCK_SECTOR_SIZE;
+              return double_index[second_level_offset];
+            }
+        }
+      
   else
     return -1;
 }
@@ -66,6 +101,169 @@ inode_init (void)
   list_init (&open_inodes);
 }
 
+static bool grow_l0 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+{
+  bool success = false;
+  uint32_t i;
+  static char zeros[BLOCK_SECTOR_SIZE];
+
+  /* Allocate new sectors and write 0's to disk. */
+  for (i = 0; i < num_sectors; i++) 
+    {
+      if (free_map_allocate (1, &(inode->data.index[i + start_sector])))
+        {
+          block_write (fs_device, inode->data.index[i + start_sector], zeros);
+        }
+      else
+        goto exit;
+    }
+  success = true;
+exit:
+  return success;
+}
+
+static bool grow_l1 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+{
+  bool success = false;
+  block_sector_t *single_index = NULL;
+  uint32_t i;
+  static char zeros[BLOCK_SECTOR_SIZE];
+
+  single_index = calloc (1, BLOCK_SECTOR_SIZE);
+  if (single_index == NULL) 
+      return false;
+
+  /* Allocate new inode if needed. */
+  if (inode_length (inode) < SINGLE_INDEX_THRESHOLD) 
+    {
+      if (!(free_map_allocate (1, &inode->data.single_index)))
+          goto exit;
+    }
+  else
+    {
+      block_read (fs_device, inode->data.single_index, single_index);
+    }
+
+  /* Allocate new sectors and write 0's to disk. */
+  for (i = 0; i < num_sectors; i++) 
+    {
+      if (free_map_allocate (1, &(single_index[i + start_sector])))
+        {
+          block_write (fs_device, single_index[i + start_sector], zeros);
+        }
+      else
+        goto exit;
+    }
+  success = true;
+
+  /* Write back the l1 inode. */
+  block_write (fs_device, inode->data.single_index, single_index);
+exit:
+  free (single_index);
+  return success;
+}
+
+static uint32_t calculate_spanned_inodes (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+{
+  uint32_t count = 1;
+  block_sector_t next_inode_boundary = (DIV_ROUND_UP((start_sector - DOUBLE_INDEX_THRESHOLD), MAX_SECTOR_ENTRIES_PER_INODE)) * MAX_SECTOR_ENTRIES_PER_INODE;
+  if ((start_sector + num_sectors) > next_inode_boundary) 
+    {
+      count += DIV_ROUND_UP (((start_sector + num_sectors) - next_inode_boundary), MAX_SECTOR_ENTRIES_PER_INODE);
+    }
+  return count;
+}
+
+static bool grow_l2 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+{
+  bool success = false;
+  bool allocated_new_inodes = false;
+  uint32_t new_inodes = 0;
+  uint32_t new_sectors_per_inode;
+  uint32_t start_new_sector_in_inode;
+  uint32_t end_new_sector_in_inode;
+  uint32_t start_inode = (start_sector - (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE)) / MAX_SECTOR_ENTRIES_PER_INODE;
+  uint32_t spanned_inodes = calculate_spanned_inodes (inode, start_sector, num_sectors);
+  uint32_t i, j;
+  static char zeros[BLOCK_SECTOR_SIZE];
+  block_sector_t *double_index = calloc (1, BLOCK_SECTOR_SIZE); 
+  if (double_index == NULL) 
+      return false;
+  block_sector_t *new_inode = calloc (1, BLOCK_SECTOR_SIZE); 
+  if (new_inode == NULL) 
+    {
+      free (double_index);
+      return false;
+    }
+
+  /* First determine if secondary inode needs to be created. */
+  if (inode_length (inode) < DOUBLE_INDEX_THRESHOLD) 
+    {
+      if (!(free_map_allocate (1, &inode->data.double_index)))
+          goto exit;
+    }
+  else
+    {
+      block_read (fs_device, inode->data.double_index, double_index);
+    }
+  /* Allocate new inodes if needed. */
+  for (i = 0; i < spanned_inodes; i++) 
+    {
+      /* Determine which sectors in inode need to be allocated. */
+      start_new_sector_in_inode = 0;
+      if (i == 0) 
+        {
+          if ((start_sector - (DOUBLE_INDEX_THRESHOLD/BLOCK_SECTOR_SIZE)) % MAX_SECTOR_ENTRIES_PER_INODE) 
+            {
+              start_new_sector_in_inode = (start_sector - (DOUBLE_INDEX_THRESHOLD/BLOCK_SECTOR_SIZE)) % MAX_SECTOR_ENTRIES_PER_INODE;
+              block_read (fs_device, double_index[start_inode + i], new_inode);
+            }
+          else
+            {
+              allocated_new_inodes = true;
+              if (!(free_map_allocate (1, &double_index[i + start_inode])))
+                  goto exit;
+            }
+        }
+      else
+        {
+          allocated_new_inodes = true;
+          if (!(free_map_allocate (1, &double_index[i + start_inode])))
+            goto exit;
+        }
+      if (i == (spanned_inodes - 1)) 
+        {
+          end_new_sector_in_inode = ((start_sector + num_sectors) - (DOUBLE_INDEX_THRESHOLD/BLOCK_SECTOR_SIZE)) % MAX_SECTOR_ENTRIES_PER_INODE;
+        }
+      else
+        {
+          end_new_sector_in_inode = MAX_SECTOR_ENTRIES_PER_INODE;
+        }
+
+      /* Allocate new sectors and write 0's to disk. */
+      for (j = start_new_sector_in_inode; j <= end_new_sector_in_inode; j++) 
+        {
+          if (!(free_map_allocate (1, &new_inode[j])))
+            goto exit;
+          block_write (fs_device, new_inode[j], zeros);
+        }
+
+      /* Write the inodes back to disk*/
+      block_write (fs_device, double_index[start_inode + i], new_inode);
+    }
+  success = true;
+
+  /* Write back the l2 inode if needed. */
+  if (allocated_new_inodes)
+    {
+      block_write (fs_device, inode->data.double_index, double_index);
+    }
+exit:
+  free (new_inode);
+  free (double_index);
+  return success;
+}
+
 /* Initializes an inode with LENGTH bytes of data and
    writes the new inode to sector SECTOR on the file system
    device.
@@ -75,7 +273,13 @@ bool
 inode_create (block_sector_t sector, off_t length)
 {
   struct inode_disk *disk_inode = NULL;
+  block_sector_t *single_index = NULL;
+  block_sector_t *double_index = NULL;
   bool success = false;
+  uint32_t secondary_inode_cnt = 0;
+  uint32_t primary_sector_cnt = 0;
+  uint32_t i, j;
+  block_sector_t **secondary_ptr = NULL;
 
   ASSERT (length >= 0);
 
@@ -84,35 +288,220 @@ inode_create (block_sector_t sector, off_t length)
   ASSERT (sizeof *disk_inode == BLOCK_SECTOR_SIZE);
 
   disk_inode = calloc (1, sizeof *disk_inode);
-  if (disk_inode != NULL)
+  if (disk_inode == NULL) 
     {
-      size_t sectors = bytes_to_sectors (length);
-      disk_inode->length = length;
-      //TODO - this is a temporary assert
-      ASSERT(sectors <= INDEX_ARRAY_LENGTH);
-
-      if (sectors > 0)
+      return false;
+    }
+  single_index = calloc (1, BLOCK_SECTOR_SIZE);
+  if (single_index == NULL) 
+    {
+      free (disk_inode);
+      return false;
+    }
+  double_index = calloc (1, BLOCK_SECTOR_SIZE);
+  if (double_index == NULL) 
+    {
+      free (disk_inode);
+      free (double_index);
+      return false;
+    }
+  /* Allocate disk space for inodes. */
+  if (length > SINGLE_INDEX_THRESHOLD) 
+    {
+      if (!(free_map_allocate (1, &disk_inode->single_index)))
         {
-          static char zeros[BLOCK_SECTOR_SIZE];
-          size_t i;
-
-          for (i = 0; i < sectors; i++)
+          goto exit;
+        }
+      if (length > DOUBLE_INDEX_THRESHOLD) 
+        {
+          primary_sector_cnt = MAX_SECTOR_ENTRIES_PER_INODE;
+          if (!(free_map_allocate (1, &disk_inode->double_index)))
             {
-              if (free_map_allocate (1, &disk_inode->index[i]))
+              goto exit;
+            }
+          secondary_inode_cnt = DIV_ROUND_UP ((length - DOUBLE_INDEX_THRESHOLD), SECONDARY_INODE_BYTES);
+
+          secondary_ptr = calloc (1, (sizeof (struct inode_disk *) * secondary_inode_cnt));
+          if (secondary_ptr == NULL) 
+            {
+              goto exit;
+            }
+          for (i = 0; i < secondary_inode_cnt; i ++) 
+            {
+              if (!(free_map_allocate (1, &double_index[i])))
                 {
-                  block_write (fs_device, disk_inode->index[i], zeros);
+                  goto exit;
                 }
-              else
-                {
-                  free (disk_inode);
-                  return false;
-                }
+              secondary_ptr[i] = calloc (1, sizeof (struct inode_disk *) * secondary_inode_cnt);
             }
         }
-      block_write (fs_device, sector, disk_inode);
-      success = true;
-      free (disk_inode);
+      else
+        {
+          primary_sector_cnt = DIV_ROUND_UP ((length - SINGLE_INDEX_THRESHOLD), BLOCK_SECTOR_SIZE);
+        }
     }
+  size_t sectors = bytes_to_sectors (length);
+  disk_inode->length = length;
+
+  /* Allocate sectors for actual file and write 0's. */
+  static char zeros[BLOCK_SECTOR_SIZE];
+  for (i = 0; i < sectors && i < INDEX_ARRAY_LENGTH; i++)
+    {
+      if (free_map_allocate (1, &disk_inode->index[i]))
+        {
+          block_write (fs_device, disk_inode->index[i], zeros);
+        }
+      else
+        goto exit;
+    }
+
+  if (sectors > INDEX_ARRAY_LENGTH)
+  {
+    if (i < (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE)) 
+      {
+        for (i = 0; i < primary_sector_cnt; i++) 
+          {
+            if (free_map_allocate (1, &single_index[i]))
+              {
+                block_write (fs_device, single_index[i], zeros);
+              }
+            else
+              goto exit;
+          }
+      }
+    if (sectors > (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE)) 
+      {
+        for (i = 0; i < secondary_inode_cnt; i++)
+          {
+            uint32_t secondary_sector_cnt;
+            if (i == (secondary_inode_cnt - 1))
+              {
+                secondary_sector_cnt = (sectors - INDEX_ARRAY_LENGTH - MAX_SECTOR_ENTRIES_PER_INODE) % MAX_SECTOR_ENTRIES_PER_INODE;
+              }
+            else
+              {
+                secondary_sector_cnt = MAX_SECTOR_ENTRIES_PER_INODE;
+              }
+            for (j = 0; j < secondary_sector_cnt; j++)
+              {
+                if (free_map_allocate (1, &secondary_ptr[i][j]))
+                  {
+                    block_write (fs_device, secondary_ptr[i][j], zeros);
+                  }
+                else
+                  goto exit;
+              }
+          }
+      }
+  }
+  /* Write back the inodes to disk. */
+  block_write (fs_device, sector, disk_inode);
+
+  if (length > SINGLE_INDEX_THRESHOLD) 
+    {
+      block_write (fs_device, disk_inode->single_index, single_index);
+    }
+  if (length > DOUBLE_INDEX_THRESHOLD) 
+    {
+      block_write (fs_device, disk_inode->double_index, double_index);
+      for (i = 0; i < secondary_inode_cnt; i++)
+        {
+          block_write (fs_device, double_index[i], secondary_ptr[i]);
+        }
+    }
+
+  success = true;
+
+exit:
+  free (disk_inode);
+  free (single_index);
+  free (double_index);
+
+  return success;
+}
+
+/* Grows a file based on requested size and offset.*/
+static bool
+grow_file (struct inode *inode, off_t size, off_t offset)
+{
+  bool success = false;
+  uint32_t total_extra_sectors = 0;
+  off_t current_length = inode_length (inode);
+  off_t final_length = offset + size;
+  off_t extra_length = final_length - current_length;
+  uint32_t extra_l0_sectors = 0;
+  uint32_t extra_l1_sectors = 0;
+  uint32_t extra_l2_sectors = 0;
+  uint32_t extra_l2_inodes = 0;
+  uint32_t start_l1_sector = 0;
+  uint32_t start_l2_sector = 0;
+  uint32_t current_total_sectors = DIV_ROUND_UP (current_length, BLOCK_SECTOR_SIZE);
+  uint32_t final_total_sectors = DIV_ROUND_UP (final_length, BLOCK_SECTOR_SIZE);
+
+  /* Calculate number of sectors needed in each zone*/
+  if (current_length < SINGLE_INDEX_THRESHOLD) 
+    {
+      start_l1_sector = (SINGLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+      start_l2_sector = (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+      if (final_length > SINGLE_INDEX_THRESHOLD ) 
+        {
+          extra_l0_sectors = INDEX_ARRAY_LENGTH - current_total_sectors;
+          if (final_length > DOUBLE_INDEX_THRESHOLD) 
+            {
+              extra_l1_sectors = MAX_SECTOR_ENTRIES_PER_INODE;
+              extra_l2_sectors = final_total_sectors - (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+            }
+          else
+            {
+              extra_l1_sectors = final_total_sectors - INDEX_ARRAY_LENGTH;
+            }
+        }
+      else
+        {
+          extra_l0_sectors = final_total_sectors - current_total_sectors;
+        }
+    }
+  else if (current_length < DOUBLE_INDEX_THRESHOLD) 
+    {
+      start_l1_sector = current_total_sectors;
+      start_l2_sector = (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+      if (final_length > DOUBLE_INDEX_THRESHOLD) 
+        {
+          extra_l1_sectors = (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE) - current_total_sectors;
+          extra_l2_sectors = final_total_sectors - (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+        }
+      else
+        {
+          extra_l1_sectors = final_total_sectors - current_total_sectors;
+        }
+    }
+  else
+    {
+      start_l2_sector = current_total_sectors;
+      extra_l2_sectors = final_total_sectors - current_total_sectors;
+    }
+
+  if (extra_l0_sectors) 
+    {
+      success = grow_l0 (inode, current_total_sectors, extra_l0_sectors);
+      if (!success)
+        return success;
+    }
+  if (extra_l1_sectors) 
+    {
+      success = grow_l1 (inode, start_l1_sector, extra_l1_sectors);
+      if (!success)
+        return success;
+    }
+  if (extra_l2_sectors) 
+    {
+      success = grow_l2 (inode, start_l2_sector, extra_l2_sectors);
+      if (!success)
+        return success;
+    }
+
+  /* Write back the inode to disk. */
+  block_write (fs_device, inode->sector, &(inode->data));
   return success;
 }
 
@@ -274,10 +663,20 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
   uint8_t *bounce = NULL;
+  const uint32_t current_upper_length = (DIV_ROUND_UP(inode_length (inode), BLOCK_SECTOR_SIZE)) * BLOCK_SECTOR_SIZE;
 
   if (inode->deny_write_cnt)
     return 0;
 
+  /* Check if file growth is needed and accordingly grow it. */
+  if (((offset + size) >= inode_length (inode)) && ((offset + size) >= current_upper_length)) 
+    {
+      if (!grow_file (inode, size, offset)) 
+        {
+          printf ("Error growing file\n");
+          return 0;
+        }
+    }
   while (size > 0) 
     {
       /* Sector to write, starting byte offset within sector. */
