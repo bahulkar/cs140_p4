@@ -501,6 +501,7 @@ grow_file (struct inode *inode, off_t size, off_t offset)
     }
 
   /* Write back the inode to disk. */
+  inode->data.length = final_length;
   block_write (fs_device, inode->sector, &(inode->data));
   return success;
 }
@@ -677,6 +678,13 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
           return 0;
         }
     }
+  else if (((offset + size) > inode_length (inode)) && ((offset + size) <= current_upper_length))
+    {
+      inode->data.length = offset + size;
+      block_write (fs_device, inode->sector, &(inode->data));
+    }
+
+
   while (size > 0) 
     {
       /* Sector to write, starting byte offset within sector. */
