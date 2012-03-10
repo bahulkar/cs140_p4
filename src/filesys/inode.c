@@ -99,9 +99,10 @@ void
 inode_init (void) 
 {
   list_init (&open_inodes);
+  printf("single threshold: %d, double threshold: %d\n", SINGLE_INDEX_THRESHOLD, DOUBLE_INDEX_THRESHOLD);
 }
 
-static bool grow_l0 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+bool grow_l0 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
 {
   bool success = false;
   uint32_t i;
@@ -122,19 +123,20 @@ exit:
   return success;
 }
 
-static bool grow_l1 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+bool grow_l1 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
 {
   bool success = false;
   block_sector_t *single_index = NULL;
   uint32_t i;
   static char zeros[BLOCK_SECTOR_SIZE];
+  block_sector_t l1_base = start_sector - (SINGLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
 
   single_index = calloc (1, BLOCK_SECTOR_SIZE);
   if (single_index == NULL) 
       return false;
 
   /* Allocate new inode if needed. */
-  if (inode_length (inode) < SINGLE_INDEX_THRESHOLD) 
+  if (inode_length (inode) <= SINGLE_INDEX_THRESHOLD) 
     {
       if (!(free_map_allocate (1, &inode->data.single_index)))
           goto exit;
@@ -147,9 +149,9 @@ static bool grow_l1 (struct inode *inode, block_sector_t start_sector, uint32_t 
   /* Allocate new sectors and write 0's to disk. */
   for (i = 0; i < num_sectors; i++) 
     {
-      if (free_map_allocate (1, &(single_index[i + start_sector])))
+      if (free_map_allocate (1, &(single_index[i + l1_base])))
         {
-          block_write (fs_device, single_index[i + start_sector], zeros);
+          block_write (fs_device, single_index[i + l1_base], zeros);
         }
       else
         goto exit;
@@ -163,7 +165,7 @@ exit:
   return success;
 }
 
-static uint32_t calculate_spanned_inodes (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+uint32_t calculate_spanned_inodes (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
 {
   uint32_t count = 1;
   block_sector_t next_inode_boundary = (DIV_ROUND_UP((start_sector - DOUBLE_INDEX_THRESHOLD), MAX_SECTOR_ENTRIES_PER_INODE)) * MAX_SECTOR_ENTRIES_PER_INODE;
@@ -174,7 +176,7 @@ static uint32_t calculate_spanned_inodes (struct inode *inode, block_sector_t st
   return count;
 }
 
-static bool grow_l2 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+bool grow_l2 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
 {
   bool success = false;
   bool allocated_new_inodes = false;
@@ -197,7 +199,7 @@ static bool grow_l2 (struct inode *inode, block_sector_t start_sector, uint32_t 
     }
 
   /* First determine if secondary inode needs to be created. */
-  if (inode_length (inode) < DOUBLE_INDEX_THRESHOLD) 
+  if (inode_length (inode) <= DOUBLE_INDEX_THRESHOLD) 
     {
       if (!(free_map_allocate (1, &inode->data.double_index)))
           goto exit;
@@ -421,7 +423,7 @@ exit:
 }
 
 /* Grows a file based on requested size and offset.*/
-static bool
+bool
 grow_file (struct inode *inode, off_t size, off_t offset)
 {
   bool success = false;
