@@ -19,6 +19,10 @@
 #define SINGLE_INDEX_THRESHOLD ((INDEX_ARRAY_LENGTH * BLOCK_SECTOR_SIZE))
 /* Beyond this length Double Index needs to be used. */
 #define DOUBLE_INDEX_THRESHOLD (SINGLE_INDEX_THRESHOLD + (MAX_SECTOR_ENTRIES_PER_INODE * BLOCK_SECTOR_SIZE))
+/* Max addressability of 2nd level index. */
+#define L2_CAPACITY (MAX_SECTOR_ENTRIES_PER_INODE * (MAX_SECTOR_ENTRIES_PER_INODE * BLOCK_SECTOR_SIZE))
+/* Max file size supported by this file system. Actual space on disk may be less. */
+#define MAX_FILE_SIZE (L2_CAPACITY + DOUBLE_INDEX_THRESHOLD)
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
@@ -284,6 +288,7 @@ inode_create (block_sector_t sector, off_t length)
   block_sector_t **secondary_ptr = NULL;
 
   ASSERT (length >= 0);
+  ASSERT (length < MAX_FILE_SIZE);
 
   /* If this assertion fails, the inode structure is not exactly
      one sector in size, and you should fix that. */
@@ -609,6 +614,8 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
   off_t bytes_read = 0;
   uint8_t *bounce = NULL;
 
+  ASSERT ((size + offset) < MAX_FILE_SIZE);
+
   while (size > 0) 
     {
       /* Disk sector to read, starting byte offset within sector. */
@@ -667,6 +674,8 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   off_t bytes_written = 0;
   uint8_t *bounce = NULL;
   const off_t current_upper_length = (DIV_ROUND_UP(inode_length (inode), BLOCK_SECTOR_SIZE)) * BLOCK_SECTOR_SIZE;
+
+  ASSERT ((size + offset) < MAX_FILE_SIZE);
 
   if (inode->deny_write_cnt)
     return 0;
