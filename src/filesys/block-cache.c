@@ -1,27 +1,30 @@
-#include "filesys/block_cache.h"
-#include "filesys/inode.h"
+#include "filesys/block-cache.h"
+#include "filesys/filesys.h"
+#include "threads/thread.h"
+#include "threads/synch.h"
+#include "devices/timer.h"
 #include <list.h>
 #include <debug.h>
-#include <round.h>
 #include <string.h>
-#include "filesys/filesys.h"
-#include "filesys/free-map.h"
-#include "threads/malloc.h"
 #include <hash.h>
-#include "threads/synch.h"
 #include <stdio.h>
 
 /* Identifies a block cache element. */
 #define BLOCK_CACHE_ELEM_MAGIC 0x32323232
 
 /* Maximum number of sectors allowed in block cache. */
-#define MAX_CACHE_SECTORS 64 //!!256
+#define MAX_CACHE_SECTORS 64
 
 /* Timer interval for periodic dirty cache block writes. */
 #define PERIODIC_WRITE_TIME_IN_SECONDS 30
 
 unsigned block_cache_hash (const struct hash_elem *b_, void *aux);
 bool block_cache_less (const struct hash_elem *a_, const struct hash_elem *b_, void *aux);
+struct block_cache_elem *block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock);
+void block_cache_evict (struct lock * block_cache_lock);
+
+static thread_func periodic_write_thread; // (void);
+static thread_func read_ahead_thread; // (void);
 
 /* Block cache data storage. */
 static uint8_t block_cache[MAX_CACHE_SECTORS][BLOCK_SECTOR_SIZE];
@@ -57,6 +60,43 @@ struct condition cond_write;
 struct condition cond_evict;
 
 /* Initializes the block cache module. */
+
+static void
+periodic_write_thread (void *aux UNUSED)
+{
+  while (1)
+    {
+      timer_msleep (PERIODIC_WRITE_TIME_IN_SECONDS * 1000);
+      printf ("*** synchronize\n");
+      block_cache_synchronize ();
+    }
+}
+
+static void
+read_ahead_thread (void *aux UNUSED)
+{
+  lock_acquire (&block_cache_lock);
+  struct list_elem * list_elem = NULL;
+  struct block_cache_elem * bce = NULL;
+  
+  while (1)
+    {
+      cond_wait (&cond_read, &block_cache_lock);
+
+      while (!list_empty (&block_cache_read_queue))
+        {
+          // printf ("*** read-ahead\n");
+          list_elem = list_pop_front (&block_cache_read_queue);
+          bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+          
+          block_read (fs_device, bce->sector, bce->block);
+          list_push_back (&block_cache_active_queue, &bce->list_elem);
+        }
+    }
+  
+  lock_release (&block_cache_lock);
+}
+
 void
 block_cache_init (void) 
 {
@@ -85,6 +125,10 @@ block_cache_init (void)
       bce->magic = BLOCK_CACHE_ELEM_MAGIC;
       list_push_back (&block_cache_unused_queue, &bce->list_elem);
     }
+    
+    
+    thread_create ("read_ahead_thread", PRI_MIN, read_ahead_thread, NULL);
+    thread_create ("periodic_write_thread", PRI_MIN + 1, periodic_write_thread, NULL);
 }
 
 /* Returns a hash value for block b_. */
@@ -156,20 +200,14 @@ block_cache_evict (struct lock * block_cache_lock UNUSED)
     {
       list_elem = list_pop_front (&block_cache_active_queue);
       if (!list_elem)
-        {
-          list_elem = list_pop_front (&block_cache_timer_queue);
-        }
-    
+        list_elem = list_pop_front (&block_cache_timer_queue);
+
       if (list_elem)
-        {
-          break;
-        }
+        break;
       else
-        {
-          PANIC ("No cache blocks to evict");
+        PANIC ("No cache blocks to evict");
           //!! add wait if eviction is another thread is removing blocks
           // cond_wait (&cond_write, block_cache_lock);
-        }
     }
 
   //!! move to eviction queue if needed to not block this thread.  otherwise, write here.
@@ -194,15 +232,12 @@ block_cache_evict (struct lock * block_cache_lock UNUSED)
 }
 
 struct block_cache_elem *
-block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
+block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock)
 {
   struct block_cache_elem * bce = block_cache_find (sector, block_cache_lock);
   
   if (!bce)
-    {
-      //!! Until eviction, assert when full
-      // ASSERT (!list_empty (&block_cache_unused_queue));
-      
+    {      
       if (list_empty (&block_cache_unused_queue))
         {
           block_cache_evict (block_cache_lock);
@@ -231,6 +266,26 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
     ASSERT (bce);
     ASSERT (bce->magic == BLOCK_CACHE_ELEM_MAGIC);
       
+  return bce;
+}
+
+struct block_cache_elem *
+block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
+{
+  struct block_cache_elem * bce = NULL;
+  struct block_cache_elem * bce_next = NULL;
+
+  bce = block_cache_add_internal (sector, block_cache_lock);
+  bce_next = block_cache_add_internal (sector + 1, block_cache_lock); //!! check for max sector?
+  
+  /* Read-ahead next sector is not loaded in cache */
+  if (bce_next->state == BCM_READ)
+    {
+      list_remove (&bce_next->list_elem);
+      list_push_back (&block_cache_read_queue, &bce_next->list_elem);
+      cond_broadcast (&cond_read, block_cache_lock);
+    }
+  
   return bce;
 }
 
