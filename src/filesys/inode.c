@@ -446,15 +446,15 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       else
         {
         
-          /* We need a bounce buffer. */
-          if (bounce_check == NULL) 
-            {
-              bounce_check = malloc (BLOCK_SECTOR_SIZE);
-              if (bounce_check == NULL)
-                break;
-            }
-        
-          block_read (fs_device, sector_idx, bounce_check);
+          // /* We need a bounce buffer. */
+          // if (bounce_check == NULL) 
+          //   {
+          //     bounce_check = malloc (BLOCK_SECTOR_SIZE);
+          //     if (bounce_check == NULL)
+          //       break;
+          //   }
+          //         
+          // block_read (fs_device, sector_idx, bounce_check);
           // ASSERT (memcmp (bounce, bounce_check, BLOCK_SECTOR_SIZE) == 0);          
         }        
         
@@ -470,7 +470,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       // lock_acquire (&block_cache_lock);
 
       // Consider moving to just the read area (maybe not for saving evicted)
-      // ASSERT (bce->state == BCM_READ);
       list_remove (&bce->list_elem);
       bce->state = BCM_ACTIVE;
       list_push_back (&block_cache_active_queue, &bce->list_elem);
