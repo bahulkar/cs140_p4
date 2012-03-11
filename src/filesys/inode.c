@@ -6,9 +6,29 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
+#include <hash.h>
+#include "threads/synch.h"
+#include <stdio.h>
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
+
+/* Identifies a block cache element. */
+#define BLOCK_CACHE_ELEM_MAGIC 0x32323232
+
+/* Maximum number of sectors allowed in block cache. */
+#define MAX_CACHE_SECTORS 128
+
+/* Timer interval for periodic dirty cache block writes. */
+#define PERIODIC_WRITE_TIME_IN_SECONDS 30
+
+unsigned block_cache_hash (const struct hash_elem *b_, void *aux);
+bool block_cache_less (const struct hash_elem *a_, const struct hash_elem *b_, void *aux);
+struct block_cache_elem *block_cache_add (block_sector_t sector, struct lock * block_cache_lock);
+struct block_cache_elem *block_cache_find (block_sector_t sector, struct lock * block_cache_lock);
+struct block_cache_elem *block_cache_find_noread (block_sector_t sector, struct lock * block_cache_lock);
+
+
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
@@ -39,6 +59,154 @@ struct inode
     struct inode_disk data;             /* Inode content. */
   };
 
+/* Block cache element states */
+//!! Fill in comments
+enum block_cache_mode
+  {
+    BCM_READ = 1,                        /* Panic on failure. */
+    BCM_EVICTED,                           /* Zero page contents. */
+    BCM_TIMER,                           /* User page. */
+    BCM_UNUSED,
+    BCM_ACTIVE
+  };
+
+/* Block cache. Block must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct block_cache_elem
+  {
+    struct hash_elem hash_elem;         /* Hash table element. */
+    struct list_elem list_elem;         /* Element in block cache list. */
+    block_sector_t sector;              /* Sector number of disk location. */
+    uint8_t *block;                     /* Block data. */
+    bool dirty;                         /* True if dirty. */
+    enum block_cache_mode state;                         /* Current state: Evicted, etc. */
+    unsigned magic;                     /* Magic number. */
+  };
+
+/* Block cache data storage. */
+static uint8_t block_cache[MAX_CACHE_SECTORS][BLOCK_SECTOR_SIZE];
+
+/* Block cache elements. */
+static struct block_cache_elem block_cache_elems[MAX_CACHE_SECTORS];
+
+/* List of cache blocks with no pending operations. */
+struct list block_cache_active_queue;
+
+/* List of empty blocks to be used for caching. */
+struct list block_cache_unused_queue;
+
+/* List of cache blocks waiting to be filled with data from disk. */
+struct list block_cache_read_queue;
+
+/* List of cache blocks waiting to be written on periodic basis. */
+struct list block_cache_timer_queue;
+
+/* List of cache blocks waiting to be written and evicted. */
+struct list block_cache_eviction_queue;
+
+/* Block cache table. */
+struct hash block_cache_table;
+
+/* Lock to synchronize accesses to cache table. */
+struct lock block_cache_lock;
+
+/* Condition when a read completes. */
+struct condition cond_read;
+
+/* Condition when a write completes. */
+struct condition cond_write;
+
+/* Returns a hash value for block b_. */
+unsigned
+block_cache_hash (const struct hash_elem *b_, void *aux UNUSED)
+{
+  const struct block_cache_elem *b = hash_entry (b_, struct block_cache_elem, hash_elem);
+  return hash_bytes (&b->sector, sizeof b->sector);
+}
+
+/* Returns true if block a precedes block b. */
+bool
+block_cache_less (const struct hash_elem *a_, const struct hash_elem *b_,
+           void *aux UNUSED)
+{
+  const struct block_cache_elem *a = hash_entry (a_, struct block_cache_elem, hash_elem);
+  const struct block_cache_elem *b = hash_entry (b_, struct block_cache_elem, hash_elem);
+
+  return a->sector < b->sector;
+}
+
+struct block_cache_elem *
+block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED) {
+
+//!! Consider requiring the caller have the lock
+  struct block_cache_elem temp_bce;
+  temp_bce.sector = sector;
+  
+  // lock_acquire (&block_cache_lock);
+  
+  struct hash_elem * hash_e;
+  hash_e = hash_find (&block_cache_table, &temp_bce.hash_elem);
+  
+  struct block_cache_elem * bce = NULL;
+  if (hash_e)
+    {
+      bce = hash_entry (hash_e, struct block_cache_elem, hash_elem);
+    }
+    
+  /* Reinstate element before it the eviction takes place */
+  if (bce && bce->state == BCM_EVICTED) //!! . or ->
+    {
+      list_remove (&bce->list_elem);
+      bce->state = BCM_ACTIVE;
+      list_push_back (&block_cache_active_queue, &bce->list_elem);
+    }
+        
+  // lock_release (&block_cache_lock);
+  
+  return bce;
+}
+
+struct block_cache_elem *
+block_cache_find_noread (block_sector_t sector, struct lock * block_cache_lock) {
+
+  struct block_cache_elem * bce = NULL;
+  
+  bce = block_cache_find (sector, block_cache_lock);
+  if (bce && bce->state == BCM_READ) //!! . or ->
+    {
+      bce = NULL;
+    }
+    
+  return bce;
+}
+
+struct block_cache_elem *
+block_cache_add (block_sector_t sector, struct lock * block_cache_lock) {
+
+  struct block_cache_elem * bce = block_cache_find (sector, block_cache_lock);
+  
+  //!! Should probably check bcf during while loop and bail if found
+  if (!bce)
+    {
+      //!! Until eviction, assert when full
+      ASSERT (!list_empty (&block_cache_unused_queue));
+      while (list_empty (&block_cache_unused_queue))
+        {
+          cond_wait (&cond_write, block_cache_lock);
+        }
+
+      struct list_elem * list_elem = NULL;      
+      list_elem = list_pop_front (&block_cache_unused_queue);
+      bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+      bce->state = BCM_READ;
+      bce->dirty = false;
+      bce->sector = sector;
+      hash_insert (&block_cache_table, &bce->hash_elem);
+      list_push_back (&block_cache_active_queue, &bce->list_elem);
+    }
+      
+  return bce;
+}
+
 /* Returns the block device sector that contains byte offset POS
    within INODE.
    Returns -1 if INODE does not contain data for a byte at offset
@@ -62,6 +230,32 @@ void
 inode_init (void) 
 {
   list_init (&open_inodes);
+
+  list_init (&block_cache_active_queue);
+  list_init (&block_cache_unused_queue);
+  list_init (&block_cache_read_queue);
+  list_init (&block_cache_timer_queue);
+  list_init (&block_cache_eviction_queue);
+  
+  hash_init (&block_cache_table, block_cache_hash, block_cache_less, NULL);
+  
+  lock_init (&block_cache_lock);
+  cond_init (&cond_read);
+  cond_init (&cond_write);
+    
+  memset (block_cache, 0, MAX_CACHE_SECTORS * BLOCK_SECTOR_SIZE);
+  int i = 0;
+  for (i = 0; i < MAX_CACHE_SECTORS; i++)
+    {
+      struct block_cache_elem * bce = NULL;
+      // bce = malloc (sizeof *bce);
+      // ASSERT (bce != NULL);
+      bce = &block_cache_elems[i];
+      bce->block = (uint8_t *)((uint32_t)block_cache + (uint32_t)(i * BLOCK_SECTOR_SIZE));
+      bce->state = BCM_UNUSED;
+      bce->magic = BLOCK_CACHE_ELEM_MAGIC;
+      list_push_back (&block_cache_unused_queue, &bce->list_elem);
+    }
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -194,15 +388,13 @@ inode_remove (struct inode *inode)
   inode->removed = true;
 }
 
-/* Reads SIZE bytes from INODE into BUFFER, starting at position OFFSET.
-   Returns the number of bytes actually read, which may be less
-   than SIZE if an error occurs or end of file is reached. */
 off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
 {
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
   uint8_t *bounce = NULL;
+  uint8_t *bounce_check = NULL;
 
   while (size > 0) 
     {
@@ -219,35 +411,84 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       int chunk_size = size < min_left ? size : min_left;
       if (chunk_size <= 0)
         break;
-
-      if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
+      
+      lock_acquire (&block_cache_lock);
+      
+      struct block_cache_elem * bce = NULL;
+      bce = block_cache_add (sector_idx, &block_cache_lock);
+      ASSERT (bce);
+      bounce = bce->block;
+      
+      printf ("r: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
+      printf ("bounce=%#x\n\t", *bounce);
+      
+      off_t i;
+      for (i = 0; i < 10; i++)
         {
-          /* Read full sector directly into caller's buffer. */
-          block_read (fs_device, sector_idx, buffer + bytes_read);
+          printf ("%#x ", *(bounce + i));
         }
-      else 
+      printf("\n");
+      
+      // lock_release (&block_cache_lock);
+
+      //!! use for file thread
+      // while (bce->state == BCM_READ)
+      //   {
+      //     cond_wait (&cond_read);
+      //   }
+
+      if (bce->state == BCM_READ)
         {
           /* Read sector into bounce buffer, then partially copy
              into caller's buffer. */
-          if (bounce == NULL) 
+          block_read (fs_device, sector_idx, bounce);
+        }
+      else
+        {
+        
+          /* We need a bounce buffer. */
+          if (bounce_check == NULL) 
             {
-              bounce = malloc (BLOCK_SECTOR_SIZE);
-              if (bounce == NULL)
+              bounce_check = malloc (BLOCK_SECTOR_SIZE);
+              if (bounce_check == NULL)
                 break;
             }
-          block_read (fs_device, sector_idx, bounce);
-          memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
-        }
+        
+          block_read (fs_device, sector_idx, bounce_check);
+          // ASSERT (memcmp (bounce, bounce_check, BLOCK_SECTOR_SIZE) == 0);          
+        }        
+        
+      memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
+        
+        
+      /* Read sector into bounce buffer, then partially copy
+         into caller's buffer. */
+      // block_read (fs_device, sector_idx, bounce);
+      // memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
+
+        
+      // lock_acquire (&block_cache_lock);
+
+      // Consider moving to just the read area (maybe not for saving evicted)
+      // ASSERT (bce->state == BCM_READ);
+      list_remove (&bce->list_elem);
+      bce->state = BCM_ACTIVE;
+      list_push_back (&block_cache_active_queue, &bce->list_elem);
+
+      lock_release (&block_cache_lock);
+        
       
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
       bytes_read += chunk_size;
     }
-  free (bounce);
+    
+  free (bounce_check);
 
   return bytes_read;
 }
+
 
 /* Writes SIZE bytes from BUFFER into INODE, starting at OFFSET.
    Returns the number of bytes actually written, which may be
@@ -261,11 +502,12 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
   uint8_t *bounce = NULL;
+  uint8_t *bounce_check = NULL;
 
   if (inode->deny_write_cnt)
     return 0;
 
-  while (size > 0) 
+  while (size > 0)
     {
       /* Sector to write, starting byte offset within sector. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
@@ -281,38 +523,73 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       if (chunk_size <= 0)
         break;
 
-      if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
-        {
-          /* Write full sector directly to disk. */
-          block_write (fs_device, sector_idx, buffer + bytes_written);
-        }
-      else 
-        {
-          /* We need a bounce buffer. */
-          if (bounce == NULL) 
-            {
-              bounce = malloc (BLOCK_SECTOR_SIZE);
-              if (bounce == NULL)
-                break;
-            }
+      lock_acquire (&block_cache_lock);
 
-          /* If the sector contains data before or after the chunk
-             we're writing, then we need to read in the sector
-             first.  Otherwise we start with a sector of all zeros. */
-          if (sector_ofs > 0 || chunk_size < sector_left) 
-            block_read (fs_device, sector_idx, bounce);
-          else
-            memset (bounce, 0, BLOCK_SECTOR_SIZE);
-          memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
-          block_write (fs_device, sector_idx, bounce);
+      struct block_cache_elem * bce = NULL;
+      bce = block_cache_add (sector_idx, &block_cache_lock); //!! we are not forcing a read, but it is on the read queue
+      ASSERT (bce);
+      bounce = bce->block;
+
+      printf ("w: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
+      printf ("bounce=%#x\n\t", *bounce);
+      
+      off_t i;
+      for (i = 0; i < 10; i++)
+        {
+          printf ("%#x ", *(bounce + i));
         }
+      printf("\n");
+        
+      /* If the sector contains data before or after the chunk
+         we're writing, then we need to read in the sector
+         first.  Otherwise we start with a sector of all zeros. */
+      if (sector_ofs > 0 || chunk_size < sector_left)
+        {
+          if (bce->state == BCM_READ)
+            {
+              printf ("\tdisk read\n");
+              block_read (fs_device, sector_idx, bounce);
+            }
+        }
+      else
+        {
+          printf ("\tzeroed\n");
+          memset (bounce, 0, BLOCK_SECTOR_SIZE);
+        }
+      memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
+      // block_write (fs_device, sector_idx, bounce);
+  
+      // /* We need a bounce buffer. */
+      // if (bounce_check == NULL) 
+      //   {
+      //     bounce_check = malloc (BLOCK_SECTOR_SIZE);
+      //     if (bounce_check == NULL)
+      //       break;
+      //   }
+
+      // block_read (fs_device, sector_idx, bounce_check);
+      // printf ("\t");
+      // for (i = 0; i < 10; i++)
+      //   {
+      //     printf ("%#x ", *(bounce + i));
+      //   }
+      // printf ("\n");
+      
+      // ASSERT (memcmp (bounce, bounce_check, BLOCK_SECTOR_SIZE) == 0);
+          
+      list_remove (&bce->list_elem);
+      bce->state = BCM_ACTIVE;
+      list_push_back (&block_cache_active_queue, &bce->list_elem);
+      
+      lock_release (&block_cache_lock);
+        
 
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
       bytes_written += chunk_size;
     }
-  free (bounce);
+  free (bounce_check);
 
   return bytes_written;
 }
