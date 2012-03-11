@@ -17,7 +17,7 @@
 #define BLOCK_CACHE_ELEM_MAGIC 0x32323232
 
 /* Maximum number of sectors allowed in block cache. */
-#define MAX_CACHE_SECTORS 128
+#define MAX_CACHE_SECTORS 64 //!!256
 
 /* Timer interval for periodic dirty cache block writes. */
 #define PERIODIC_WRITE_TIME_IN_SECONDS 30
@@ -115,6 +115,9 @@ struct condition cond_read;
 /* Condition when a write completes. */
 struct condition cond_write;
 
+/* Condition when an eviction completes. */
+struct condition cond_evict;
+
 /* Returns a hash value for block b_. */
 unsigned
 block_cache_hash (const struct hash_elem *b_, void *aux UNUSED)
@@ -135,14 +138,11 @@ block_cache_less (const struct hash_elem *a_, const struct hash_elem *b_,
 }
 
 struct block_cache_elem *
-block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED) {
-
-//!! Consider requiring the caller have the lock
+block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED)
+{
   struct block_cache_elem temp_bce;
   temp_bce.sector = sector;
-  
-  // lock_acquire (&block_cache_lock);
-  
+    
   struct hash_elem * hash_e;
   hash_e = hash_find (&block_cache_table, &temp_bce.hash_elem);
   
@@ -153,25 +153,23 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED) 
     }
     
   /* Reinstate element before it the eviction takes place */
-  if (bce && bce->state == BCM_EVICTED) //!! . or ->
+  if (bce && bce->state == BCM_EVICTED)
     {
       list_remove (&bce->list_elem);
       bce->state = BCM_ACTIVE;
       list_push_back (&block_cache_active_queue, &bce->list_elem);
     }
-        
-  // lock_release (&block_cache_lock);
   
   return bce;
 }
 
 struct block_cache_elem *
-block_cache_find_noread (block_sector_t sector, struct lock * block_cache_lock) {
-
+block_cache_find_noread (block_sector_t sector, struct lock * block_cache_lock)
+{
   struct block_cache_elem * bce = NULL;
   
   bce = block_cache_find (sector, block_cache_lock);
-  if (bce && bce->state == BCM_READ) //!! . or ->
+  if (bce && bce->state == BCM_READ)
     {
       bce = NULL;
     }
@@ -179,29 +177,86 @@ block_cache_find_noread (block_sector_t sector, struct lock * block_cache_lock) 
   return bce;
 }
 
-struct block_cache_elem *
-block_cache_add (block_sector_t sector, struct lock * block_cache_lock) {
+void
+block_cache_evict (struct lock * block_cache_lock UNUSED)
+{
+  struct list_elem * list_elem = NULL;
+  struct block_cache_elem * bce = NULL;
 
+  while (!list_elem)
+    {
+      list_elem = list_pop_front (&block_cache_active_queue);
+      if (!list_elem)
+        {
+          list_elem = list_pop_front (&block_cache_timer_queue);
+        }
+    
+      if (list_elem)
+        {
+          break;
+        }
+      else
+        {
+          PANIC ("No cache blocks to evict");
+          //!! add wait if eviction is another thread is removing blocks
+          // cond_wait (&cond_write, block_cache_lock);
+        }
+    }
+
+  //!! move to eviction queue if needed to not block this thread.  otherwise, write here.
+
+  bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+  bce->state = BCM_EVICTED;
+  
+  //!! if separated, this would be on file thread, would push onto eviction queue instead
+  if (bce->dirty)
+    {
+      // printf ("*** evict: dirty block\n");
+      //!! if eviction is this linear, then it would be simpler to return the elem directly.  also remove the eviction list
+      block_write (fs_device, bce->sector, bce->block);
+    }
+  else
+    {
+      // printf ("*** evict: clean block\n");
+    }
+    
+  hash_delete (&block_cache_table, &bce->hash_elem);
+  list_push_back (&block_cache_unused_queue, &bce->list_elem);
+}
+
+struct block_cache_elem *
+block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
+{
   struct block_cache_elem * bce = block_cache_find (sector, block_cache_lock);
   
-  //!! Should probably check bcf during while loop and bail if found
   if (!bce)
     {
       //!! Until eviction, assert when full
-      ASSERT (!list_empty (&block_cache_unused_queue));
-      while (list_empty (&block_cache_unused_queue))
+      // ASSERT (!list_empty (&block_cache_unused_queue));
+      
+      if (list_empty (&block_cache_unused_queue))
         {
-          cond_wait (&cond_write, block_cache_lock);
+          block_cache_evict (block_cache_lock);
         }
 
-      struct list_elem * list_elem = NULL;      
-      list_elem = list_pop_front (&block_cache_unused_queue);
-      bce = list_entry (list_elem, struct block_cache_elem, list_elem);
-      bce->state = BCM_READ;
-      bce->dirty = false;
-      bce->sector = sector;
-      hash_insert (&block_cache_table, &bce->hash_elem);
-      list_push_back (&block_cache_active_queue, &bce->list_elem);
+      //!! Turn on if evicting in a separate file queue
+      // while (list_empty (&block_cache_unused_queue))
+      //   {
+      //     cond_wait (&cond_write, block_cache_lock);
+      //   }
+        
+      bce = block_cache_find (sector, block_cache_lock);
+      if (!bce)
+        {
+          struct list_elem * list_elem = NULL;      
+          list_elem = list_pop_front (&block_cache_unused_queue);
+          bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+          bce->state = BCM_READ;
+          bce->dirty = false;
+          bce->sector = sector;
+          hash_insert (&block_cache_table, &bce->hash_elem);
+          list_push_back (&block_cache_active_queue, &bce->list_elem);
+        }
     }
       
   return bce;
@@ -242,12 +297,14 @@ inode_init (void)
   lock_init (&block_cache_lock);
   cond_init (&cond_read);
   cond_init (&cond_write);
-    
+  cond_init (&cond_evict);
+      
   memset (block_cache, 0, MAX_CACHE_SECTORS * BLOCK_SECTOR_SIZE);
   int i = 0;
   for (i = 0; i < MAX_CACHE_SECTORS; i++)
     {
       struct block_cache_elem * bce = NULL;
+      //!! consider using malloc on demand.
       // bce = malloc (sizeof *bce);
       // ASSERT (bce != NULL);
       bce = &block_cache_elems[i];
@@ -419,15 +476,15 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       ASSERT (bce);
       bounce = bce->block;
       
-      printf ("r: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
-      printf ("bounce=%#x\n\t", *bounce);
-      
-      off_t i;
-      for (i = 0; i < 10; i++)
-        {
-          printf ("%#x ", *(bounce + i));
-        }
-      printf("\n");
+      // printf ("r: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
+      // printf ("bounce=%#x\n\t", *bounce);
+      // 
+      // off_t i;
+      // for (i = 0; i < 10; i++)
+      //   {
+      //     printf ("%#x ", *(bounce + i));
+      //   }
+      // printf("\n");
       
       // lock_release (&block_cache_lock);
 
@@ -529,15 +586,15 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       ASSERT (bce);
       bounce = bce->block;
 
-      printf ("w: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
-      printf ("bounce=%#x\n\t", *bounce);
-      
-      off_t i;
-      for (i = 0; i < 10; i++)
-        {
-          printf ("%#x ", *(bounce + i));
-        }
-      printf("\n");
+      // printf ("w: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
+      // printf ("bounce=%#x\n\t", *bounce);
+      // 
+      // off_t i;
+      // for (i = 0; i < 10; i++)
+      //   {
+      //     printf ("%#x ", *(bounce + i));
+      //   }
+      // printf("\n");
         
       /* If the sector contains data before or after the chunk
          we're writing, then we need to read in the sector
@@ -546,16 +603,17 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
         {
           if (bce->state == BCM_READ)
             {
-              printf ("\tdisk read\n");
+              // printf ("\tdisk read\n");
               block_read (fs_device, sector_idx, bounce);
             }
         }
       else
         {
-          printf ("\tzeroed\n");
+          // printf ("\tzeroed\n");
           memset (bounce, 0, BLOCK_SECTOR_SIZE);
         }
       memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
+      
       // block_write (fs_device, sector_idx, bounce);
   
       // /* We need a bounce buffer. */
@@ -578,6 +636,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
           
       list_remove (&bce->list_elem);
       bce->state = BCM_ACTIVE;
+      bce->dirty = true;
       list_push_back (&block_cache_active_queue, &bce->list_elem);
       
       lock_release (&block_cache_lock);
