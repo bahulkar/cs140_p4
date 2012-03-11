@@ -223,11 +223,10 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
         break;
       
       lock_acquire (&block_cache_lock);
-      
       struct block_cache_elem * bce = NULL;
       bce = block_cache_add (sector_idx, &block_cache_lock);
-      ASSERT (bce);
       bounce = bce->block;
+      // lock_release (&block_cache_lock);
       
       // printf ("r: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
       // printf ("bounce=%#x\n\t", *bounce);
@@ -238,53 +237,18 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       //     printf ("%#x ", *(bounce + i));
       //   }
       // printf("\n");
-      
-      // lock_release (&block_cache_lock);
 
-      //!! use for file thread
-      // while (bce->state == BCM_READ)
-      //   {
-      //     cond_wait (&cond_read);
-      //   }
-
+      /* Read sector into the cache, then partially copy
+         into caller's buffer. */
       if (bce->state == BCM_READ)
-        {
-          /* Read sector into bounce buffer, then partially copy
-             into caller's buffer. */
-          block_read (fs_device, sector_idx, bounce);
-        }
-      else
-        {
-        
-          // /* We need a bounce buffer. */
-          // if (bounce_check == NULL) 
-          //   {
-          //     bounce_check = malloc (BLOCK_SECTOR_SIZE);
-          //     if (bounce_check == NULL)
-          //       break;
-          //   }
-          //         
-          // block_read (fs_device, sector_idx, bounce_check);
-          // ASSERT (memcmp (bounce, bounce_check, BLOCK_SECTOR_SIZE) == 0);          
-        }        
+        block_read (fs_device, sector_idx, bounce);
         
       memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
         
-        
-      /* Read sector into bounce buffer, then partially copy
-         into caller's buffer. */
-      // block_read (fs_device, sector_idx, bounce);
-      // memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
-
-        
       // lock_acquire (&block_cache_lock);
-
-      // Consider moving to just the read area (maybe not for saving evicted)
       block_cache_mark_active (bce, &block_cache_lock);
-
       lock_release (&block_cache_lock);
-        
-      
+
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
@@ -331,11 +295,10 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
         break;
 
       lock_acquire (&block_cache_lock);
-
       struct block_cache_elem * bce = NULL;
       bce = block_cache_add (sector_idx, &block_cache_lock); //!! we are not forcing a read, but it is on the read queue
-      ASSERT (bce);
       bounce = bce->block;
+      // lock_release (&block_cache_lock);
 
       // printf ("w: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
       // printf ("bounce=%#x\n\t", *bounce);
@@ -353,41 +316,18 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       if (sector_ofs > 0 || chunk_size < sector_left)
         {
           if (bce->state == BCM_READ)
-            {
-              // printf ("\tdisk read\n");
-              block_read (fs_device, sector_idx, bounce);
-            }
+            block_read (fs_device, sector_idx, bounce);
         }
       else
         {
-          // printf ("\tzeroed\n");
           memset (bounce, 0, BLOCK_SECTOR_SIZE);
         }
-      memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
+        
+      memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);      
       
-      // block_write (fs_device, sector_idx, bounce);
-  
-      // /* We need a bounce buffer. */
-      // if (bounce_check == NULL) 
-      //   {
-      //     bounce_check = malloc (BLOCK_SECTOR_SIZE);
-      //     if (bounce_check == NULL)
-      //       break;
-      //   }
-
-      // block_read (fs_device, sector_idx, bounce_check);
-      // printf ("\t");
-      // for (i = 0; i < 10; i++)
-      //   {
-      //     printf ("%#x ", *(bounce + i));
-      //   }
-      // printf ("\n");
-      
-      // ASSERT (memcmp (bounce, bounce_check, BLOCK_SECTOR_SIZE) == 0);
-      
+      // lock_acquire (&block_cache_lock);
       bce->dirty = true;
       block_cache_mark_active (bce, &block_cache_lock);
-      
       lock_release (&block_cache_lock);
         
 
@@ -396,7 +336,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       offset += chunk_size;
       bytes_written += chunk_size;
     }
-  free (bounce_check);
 
   return bytes_written;
 }

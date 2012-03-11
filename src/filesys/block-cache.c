@@ -176,19 +176,19 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED)
   return bce;
 }
 
-struct block_cache_elem *
-block_cache_find_noread (block_sector_t sector, struct lock * block_cache_lock)
-{
-  struct block_cache_elem * bce = NULL;
-  
-  bce = block_cache_find (sector, block_cache_lock);
-  if (bce && bce->state == BCM_READ)
-    {
-      bce = NULL;
-    }
-    
-  return bce;
-}
+// struct block_cache_elem *
+// block_cache_find_noread (block_sector_t sector, struct lock * block_cache_lock)
+// {
+//   struct block_cache_elem * bce = NULL;
+//   
+//   bce = block_cache_find (sector, block_cache_lock);
+//   if (bce && bce->state == BCM_READ)
+//     {
+//       bce = NULL;
+//     }
+//     
+//   return bce;
+// }
 
 void
 block_cache_evict (struct lock * block_cache_lock UNUSED)
