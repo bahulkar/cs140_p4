@@ -103,7 +103,6 @@ void
 inode_init (void) 
 {
   list_init (&open_inodes);
-  printf("single threshold: %d, double threshold: %d\n", SINGLE_INDEX_THRESHOLD, DOUBLE_INDEX_THRESHOLD);
 }
 
 bool grow_l0 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
