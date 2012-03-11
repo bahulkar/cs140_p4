@@ -27,8 +27,7 @@ bool block_cache_less (const struct hash_elem *a_, const struct hash_elem *b_, v
 struct block_cache_elem *block_cache_add (block_sector_t sector, struct lock * block_cache_lock);
 struct block_cache_elem *block_cache_find (block_sector_t sector, struct lock * block_cache_lock);
 struct block_cache_elem *block_cache_find_noread (block_sector_t sector, struct lock * block_cache_lock);
-
-
+void block_cache_evict (struct lock * block_cache_lock);
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
@@ -260,6 +259,44 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
     }
       
   return bce;
+}
+
+//!! will block all threads.  consider a less disruptive approach using the periodic_queue
+void
+block_cache_synchronize ()
+{
+  struct list_elem * list_elem = NULL;
+  struct block_cache_elem * bce = NULL;
+  
+  lock_acquire (&block_cache_lock);
+
+  do
+    {
+      if (list_elem)
+        {
+          list_elem = list_next (list_elem);
+          if (list_elem == list_end (&block_cache_active_queue))
+            list_elem = NULL;
+        }
+      else if (!list_empty (&block_cache_active_queue))
+        list_elem = list_begin (&block_cache_active_queue);
+
+      // if (!list_elem && !list_empty (&block_cache_timer_queue))
+      //   list_elem = list_pop_front (&block_cache_timer_queue);
+    
+      if (list_elem)
+        {
+          bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+  
+          if (bce->dirty)
+            block_write (fs_device, bce->sector, bce->block);
+            // printf ("*");
+        }
+        
+      // printf ("e=%#x ", list_elem);
+    } while (list_elem);
+    
+  lock_release (&block_cache_lock);
 }
 
 /* Returns the block device sector that contains byte offset POS
