@@ -79,6 +79,9 @@ read_ahead_thread (void *aux UNUSED)
   struct list_elem * list_elem = NULL;
   struct block_cache_elem * bce = NULL;
   
+  static uint8_t read_cache[BLOCK_SECTOR_SIZE];
+  memset (read_cache, 0, BLOCK_SECTOR_SIZE);
+  
   while (1)
     {
       cond_wait (&cond_read, &block_cache_lock);
@@ -88,12 +91,19 @@ read_ahead_thread (void *aux UNUSED)
           // printf ("*** read-ahead\n");
           list_elem = list_pop_front (&block_cache_read_queue);
           bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+          block_sector_t orig_sector = bce->sector;
           
           lock_release (&block_cache_lock);
-          block_read (fs_device, bce->sector, bce->block);
+          block_read (fs_device, bce->sector, read_cache);
           lock_acquire (&block_cache_lock);
-          
-          list_push_back (&block_cache_active_queue, &bce->list_elem);
+
+          /* Check that the block hasn't been read by another thread before writing into it */
+          //!! On return from lock, we could have already read and written once.  this will overwrite that data          
+          if (bce->sector == orig_sector && bce->state == BCM_READ)
+            {
+              memcpy (bce->block, read_cache, BLOCK_SECTOR_SIZE);
+              list_push_back (&block_cache_active_queue, &bce->list_elem); 
+            }          
         }
     }
   
@@ -168,8 +178,8 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED)
       bce = hash_entry (hash_e, struct block_cache_elem, hash_elem);
     }
     
-  /* Reinstate element before the eviction takes place */
-  if (bce && bce->state == BCM_EVICTED)
+  /* Rescue element before the eviction takes place */
+  if (bce && bce->state == BCM_EVICTING)
     {
       list_remove (&bce->list_elem);
       bce->state = BCM_ACTIVE;
@@ -198,12 +208,23 @@ block_cache_evict (struct lock * block_cache_lock)
 {
   struct list_elem * list_elem = NULL;
   struct block_cache_elem * bce = NULL;
-
+  
+  /* Find a buffer cache element to evict */
+  // FIFO Algorithm
+  //!! better to iterate in a for loop, panic at end
   while (!list_elem)
     {
       list_elem = list_pop_front (&block_cache_active_queue);
-      if (!list_elem)
-        list_elem = list_pop_front (&block_cache_timer_queue);
+      if (list_elem)
+        {
+          bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+          // if (bce->state == BCM_READ)
+          //   {
+          //     //!! busy waits!!
+          //     list_push_back (&block_cache_active_queue, &bce->list_elem);
+          //     list_elem = NULL;
+          //   }
+        }
 
       if (list_elem)
         break;
@@ -213,28 +234,30 @@ block_cache_evict (struct lock * block_cache_lock)
           // cond_wait (&cond_write, block_cache_lock);
     }
 
+  /* Evicts the buffer cache element */
   //!! move to eviction queue if needed to not block this thread.  otherwise, write here.
-
-  bce = list_entry (list_elem, struct block_cache_elem, list_elem);
-  bce->state = BCM_EVICTED;
+  //!! I'm still considering moving it to the eviction queue.  This will keep interfering
+  // with synchronize() (or any active_queue iterator)
+  // bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+  bce->state = BCM_EVICTING;
   
   //!! if separated, this would be on file thread, would push onto eviction queue instead
   if (bce->dirty)
     {
       //!! What if someone grabs the evicted block during the write?  then we'll delete the hash entry
-      // printf ("*** evict: dirty block\n");
       //!! if eviction is this linear, then it would be simpler to return the elem directly.  also remove the eviction list
       lock_release (block_cache_lock);
       block_write (fs_device, bce->sector, bce->block);
       lock_acquire (block_cache_lock);
     }
-  else
+  
+  /* Check the block hasn't been rescued during file I/O */
+  if (bce->state == BCM_EVICTING)
     {
-      // printf ("*** evict: clean block\n");
+      bce->state = BCM_EVICTED;      
+      hash_delete (&block_cache_table, &bce->hash_elem);
+      list_push_back (&block_cache_unused_queue, &bce->list_elem);
     }
-    
-  hash_delete (&block_cache_table, &bce->hash_elem);
-  list_push_back (&block_cache_unused_queue, &bce->list_elem);
 }
 
 struct block_cache_elem *
@@ -313,7 +336,7 @@ block_cache_synchronize ()
   lock_acquire (&block_cache_lock);
 
   do
-    {
+    { 
       if (list_elem)
         {
           list_elem = list_next (list_elem);
@@ -323,18 +346,20 @@ block_cache_synchronize ()
       else if (!list_empty (&block_cache_active_queue))
         list_elem = list_begin (&block_cache_active_queue);
 
-      // if (!list_elem && !list_empty (&block_cache_timer_queue))
-      //   list_elem = list_pop_front (&block_cache_timer_queue);
-
       if (list_elem)
         {
           bce = list_entry (list_elem, struct block_cache_elem, list_elem);
-
-          if (bce->dirty)
+          
+          /* If another thread moved the list elem off the active queue, then cancel synchronize.
+             Otherwise, save the cached block if dirty */
+          if (bce->state != BCM_ACTIVE)
+            break;
+          else if (bce->dirty)
             {
-              lock_release (&block_cache_lock);
+              //!! async causes one test to fail.  check later
+              // lock_release (&block_cache_lock);
               block_write (fs_device, bce->sector, bce->block);
-              lock_acquire (&block_cache_lock);
+              // lock_acquire (&block_cache_lock);
               // printf ("*");
             }
         }
@@ -393,13 +418,15 @@ buffer_cache_read (struct block *fs_device UNUSED, block_sector_t sector_idx, vo
      into caller's buffer. */
   if (bce->state == BCM_READ)
     {
+
       lock_release (&block_cache_lock);
       block_read (fs_device, sector_idx, bce->block);
-      lock_acquire (&block_cache_lock);
+      lock_acquire (&block_cache_lock);      
     }
-  
+
   memcpy (buffer, bce->block, BLOCK_SECTOR_SIZE);  
-  block_cache_mark_active (bce, &block_cache_lock);
+  block_cache_mark_active (bce, &block_cache_lock);      
+
   lock_release (&block_cache_lock);
   
   return bce;

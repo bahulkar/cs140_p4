@@ -12,7 +12,7 @@ enum block_cache_mode
   {
     BCM_READ = 1,                        /* Panic on failure. */
     BCM_EVICTED,                           /* Zero page contents. */
-    BCM_TIMER,                           /* User page. */
+    BCM_EVICTING,                           /* User page. */
     BCM_UNUSED,
     BCM_ACTIVE
   };
