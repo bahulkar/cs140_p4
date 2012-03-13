@@ -27,11 +27,6 @@
 /* Max file size supported by this file system. Actual space on disk may be less. */
 #define MAX_FILE_SIZE (L2_CAPACITY + DOUBLE_INDEX_THRESHOLD)
 
-struct block_cache_elem *
-buffer_cache_write (struct block *fs_device UNUSED, block_sector_t sector_idx, const void *buffer);
-struct block_cache_elem *
-buffer_cache_read (struct block *fs_device UNUSED, block_sector_t sector_idx, void *buffer);
-
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
@@ -645,16 +640,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       bounce = bce->block;
       // lock_release (&block_cache_lock);
       
-      // printf ("r: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
-      // printf ("bounce=%#x\n\t", *bounce);
-      // 
-      // off_t i;
-      // for (i = 0; i < 10; i++)
-      //   {
-      //     printf ("%#x ", *(bounce + i));
-      //   }
-      // printf("\n");
-
       /* Read sector into the cache, then partially copy
          into caller's buffer. */
       if (bce->state == BCM_READ)
@@ -673,54 +658,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
     }
 
   return bytes_read;
-}
-
-struct block_cache_elem *
-buffer_cache_write (struct block *fs_device UNUSED, block_sector_t sector_idx, const void *buffer)
-{
-  lock_acquire (&block_cache_lock);
-  struct block_cache_elem * bce = NULL;
-  bce = block_cache_add (sector_idx, &block_cache_lock);
-  bce->dirty = true;
-  memcpy (bce->block, buffer, BLOCK_SECTOR_SIZE);      
-  block_cache_mark_active (bce, &block_cache_lock);
-  lock_release (&block_cache_lock);
-
-  return bce;  
-}
-
-struct block_cache_elem *
-buffer_cache_read (struct block *fs_device UNUSED, block_sector_t sector_idx, void *buffer_)
-{
-  lock_acquire (&block_cache_lock);
-  struct block_cache_elem * bce = NULL;
-  bce = block_cache_add (sector_idx, &block_cache_lock);
-  
-  uint8_t *buffer = buffer_;
-  // lock_release (&block_cache_lock);
-
-  // printf ("r: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
-  // printf ("bounce=%#x\n\t", *bounce);
-  // 
-  // off_t i;
-  // for (i = 0; i < 10; i++)
-  //   {
-  //     printf ("%#x ", *(bounce + i));
-  //   }
-  // printf("\n");
-
-  /* Read sector into the cache, then partially copy
-     into caller's buffer. */
-  if (bce->state == BCM_READ)
-    block_read (fs_device, sector_idx, bce->block);
-  
-  memcpy (buffer, bce->block, BLOCK_SECTOR_SIZE);
-  
-  // lock_acquire (&block_cache_lock);
-  block_cache_mark_active (bce, &block_cache_lock);
-  lock_release (&block_cache_lock);
-  
-  return bce;
 }
 
 /* Writes SIZE bytes from BUFFER into INODE, starting at OFFSET.
@@ -757,7 +694,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       buffer_cache_write (fs_device, inode->sector, &(inode->data));
     }
 
-
   while (size > 0) 
     {
       /* Sector to write, starting byte offset within sector. */
@@ -776,19 +712,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
       lock_acquire (&block_cache_lock);
       struct block_cache_elem * bce = NULL;
-      bce = block_cache_add (sector_idx, &block_cache_lock); //!! we are not forcing a read, but it is on the read queue
+      bce = block_cache_add (sector_idx, &block_cache_lock);
       bounce = bce->block;
       // lock_release (&block_cache_lock);
-
-      // printf ("w: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
-      // printf ("bounce=%#x\n\t", *bounce);
-      // 
-      // off_t i;
-      // for (i = 0; i < 10; i++)
-      //   {
-      //     printf ("%#x ", *(bounce + i));
-      //   }
-      // printf("\n");
         
       /* If the sector contains data before or after the chunk
          we're writing, then we need to read in the sector

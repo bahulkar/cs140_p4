@@ -334,3 +334,62 @@ block_cache_synchronize ()
     
   lock_release (&block_cache_lock);
 }
+
+struct block_cache_elem *
+buffer_cache_write (struct block *fs_device UNUSED, block_sector_t sector_idx, const void *buffer)
+{
+  lock_acquire (&block_cache_lock);
+  struct block_cache_elem * bce = NULL;
+  bce = block_cache_add (sector_idx, &block_cache_lock);
+  
+  // printf ("w: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
+  // printf ("bounce=%#x\n\t", *bounce);
+  // 
+  // off_t i;
+  // for (i = 0; i < 10; i++)
+  //   {
+  //     printf ("%#x ", *(bounce + i));
+  //   }
+  // printf("\n");
+  
+  bce->dirty = true;
+  memcpy (bce->block, buffer, BLOCK_SECTOR_SIZE);      
+  block_cache_mark_active (bce, &block_cache_lock);
+  lock_release (&block_cache_lock);
+
+  return bce;  
+}
+
+struct block_cache_elem *
+buffer_cache_read (struct block *fs_device UNUSED, block_sector_t sector_idx, void *buffer_)
+{
+  lock_acquire (&block_cache_lock);
+  struct block_cache_elem * bce = NULL;
+  bce = block_cache_add (sector_idx, &block_cache_lock);
+  
+  uint8_t *buffer = buffer_;
+  // lock_release (&block_cache_lock);
+
+  // printf ("r: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
+  // printf ("bounce=%#x\n\t", *bounce);
+  // 
+  // off_t i;
+  // for (i = 0; i < 10; i++)
+  //   {
+  //     printf ("%#x ", *(bounce + i));
+  //   }
+  // printf("\n");
+
+  /* Read sector into the cache, then partially copy
+     into caller's buffer. */
+  if (bce->state == BCM_READ)
+    block_read (fs_device, sector_idx, bce->block);
+  
+  memcpy (buffer, bce->block, BLOCK_SECTOR_SIZE);
+  
+  // lock_acquire (&block_cache_lock);
+  block_cache_mark_active (bce, &block_cache_lock);
+  lock_release (&block_cache_lock);
+  
+  return bce;
+}
