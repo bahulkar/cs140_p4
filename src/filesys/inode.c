@@ -638,16 +638,18 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       struct block_cache_elem * bce = NULL;
       bce = block_cache_add (sector_idx, &block_cache_lock);
       bounce = bce->block;
-      // lock_release (&block_cache_lock);
       
       /* Read sector into the cache, then partially copy
          into caller's buffer. */
       if (bce->state == BCM_READ)
-        block_read (fs_device, sector_idx, bounce);
+        {
+          lock_release (&block_cache_lock);
+          block_read (fs_device, sector_idx, bounce);
+          lock_acquire (&block_cache_lock); 
+        }
         
       memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
         
-      // lock_acquire (&block_cache_lock);
       block_cache_mark_active (bce, &block_cache_lock);
       lock_release (&block_cache_lock);
       
@@ -714,7 +716,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       struct block_cache_elem * bce = NULL;
       bce = block_cache_add (sector_idx, &block_cache_lock);
       bounce = bce->block;
-      // lock_release (&block_cache_lock);
         
       /* If the sector contains data before or after the chunk
          we're writing, then we need to read in the sector
@@ -722,7 +723,11 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       if (sector_ofs > 0 || chunk_size < sector_left)
         {
           if (bce->state == BCM_READ)
-            block_read (fs_device, sector_idx, bounce);
+            {
+              lock_release (&block_cache_lock);
+              block_read (fs_device, sector_idx, bounce);
+              lock_acquire (&block_cache_lock);
+            }
         }
       else
         {
@@ -731,7 +736,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
         
       memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);      
       
-      // lock_acquire (&block_cache_lock);
       bce->dirty = true;
       block_cache_mark_active (bce, &block_cache_lock);
       lock_release (&block_cache_lock);

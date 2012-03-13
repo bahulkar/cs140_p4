@@ -89,7 +89,10 @@ read_ahead_thread (void *aux UNUSED)
           list_elem = list_pop_front (&block_cache_read_queue);
           bce = list_entry (list_elem, struct block_cache_elem, list_elem);
           
+          lock_release (&block_cache_lock);
           block_read (fs_device, bce->sector, bce->block);
+          lock_acquire (&block_cache_lock);
+          
           list_push_back (&block_cache_active_queue, &bce->list_elem);
         }
     }
@@ -165,7 +168,7 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED)
       bce = hash_entry (hash_e, struct block_cache_elem, hash_elem);
     }
     
-  /* Reinstate element before it the eviction takes place */
+  /* Reinstate element before the eviction takes place */
   if (bce && bce->state == BCM_EVICTED)
     {
       list_remove (&bce->list_elem);
@@ -191,7 +194,7 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED)
 // }
 
 void
-block_cache_evict (struct lock * block_cache_lock UNUSED)
+block_cache_evict (struct lock * block_cache_lock)
 {
   struct list_elem * list_elem = NULL;
   struct block_cache_elem * bce = NULL;
@@ -218,9 +221,12 @@ block_cache_evict (struct lock * block_cache_lock UNUSED)
   //!! if separated, this would be on file thread, would push onto eviction queue instead
   if (bce->dirty)
     {
+      //!! What if someone grabs the evicted block during the write?  then we'll delete the hash entry
       // printf ("*** evict: dirty block\n");
       //!! if eviction is this linear, then it would be simpler to return the elem directly.  also remove the eviction list
+      lock_release (block_cache_lock);
       block_write (fs_device, bce->sector, bce->block);
+      lock_acquire (block_cache_lock);
     }
   else
     {
@@ -325,8 +331,12 @@ block_cache_synchronize ()
           bce = list_entry (list_elem, struct block_cache_elem, list_elem);
 
           if (bce->dirty)
-            block_write (fs_device, bce->sector, bce->block);
-            // printf ("*");
+            {
+              lock_release (&block_cache_lock);
+              block_write (fs_device, bce->sector, bce->block);
+              lock_acquire (&block_cache_lock);
+              // printf ("*");
+            }
         }
         
       // printf ("e=%#x ", list_elem);
@@ -368,7 +378,6 @@ buffer_cache_read (struct block *fs_device UNUSED, block_sector_t sector_idx, vo
   bce = block_cache_add (sector_idx, &block_cache_lock);
   
   uint8_t *buffer = buffer_;
-  // lock_release (&block_cache_lock);
 
   // printf ("r: bce=%#x, bce->magic=%#x, bce->state=%d, bce->block=%#x, ", (uint32_t)bce, (uint32_t)bce->magic, bce->state, bce->block);
   // printf ("bounce=%#x\n\t", *bounce);
@@ -383,11 +392,13 @@ buffer_cache_read (struct block *fs_device UNUSED, block_sector_t sector_idx, vo
   /* Read sector into the cache, then partially copy
      into caller's buffer. */
   if (bce->state == BCM_READ)
-    block_read (fs_device, sector_idx, bce->block);
+    {
+      lock_release (&block_cache_lock);
+      block_read (fs_device, sector_idx, bce->block);
+      lock_acquire (&block_cache_lock);
+    }
   
-  memcpy (buffer, bce->block, BLOCK_SECTOR_SIZE);
-  
-  // lock_acquire (&block_cache_lock);
+  memcpy (buffer, bce->block, BLOCK_SECTOR_SIZE);  
   block_cache_mark_active (bce, &block_cache_lock);
   lock_release (&block_cache_lock);
   
