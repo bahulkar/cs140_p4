@@ -61,6 +61,7 @@ struct condition cond_evict;
 
 /* Initializes the block cache module. */
 
+/* Thread periodically writes the buffer cache to disk in the background */
 static void
 periodic_write_thread (void *aux UNUSED)
 {
@@ -72,6 +73,7 @@ periodic_write_thread (void *aux UNUSED)
     }
 }
 
+/* Thread performs read-aheads in the background */
 static void
 read_ahead_thread (void *aux UNUSED)
 {
@@ -79,13 +81,15 @@ read_ahead_thread (void *aux UNUSED)
   struct list_elem * list_elem = NULL;
   struct block_cache_elem * bce = NULL;
   
+  /* Buffer used to keep read-aheads */
   static uint8_t read_cache[BLOCK_SECTOR_SIZE];
   memset (read_cache, 0, BLOCK_SECTOR_SIZE);
   
+  /* Waits for pending reads, and then loads them into the cache */
   while (1)
     {
       cond_wait (&cond_read, &block_cache_lock);
-
+      
       while (!list_empty (&block_cache_read_queue))
         {
           // printf ("*** read-ahead\n");
@@ -93,16 +97,18 @@ read_ahead_thread (void *aux UNUSED)
           bce = list_entry (list_elem, struct block_cache_elem, list_elem);
           block_sector_t orig_sector = bce->sector;
           
+          //!! pin during read
           lock_release (&block_cache_lock);
           block_read (fs_device, bce->sector, read_cache);
           lock_acquire (&block_cache_lock);
 
-          /* Check that the block hasn't been read by another thread before writing into it */
-          //!! On return from lock, we could have already read and written once.  this will overwrite that data          
+          /* Check that the block hasn't been read and/or written
+             by another thread before overwriting with disk contents */
           if (bce->sector == orig_sector && bce->state == BCM_READ)
             {
               memcpy (bce->block, read_cache, BLOCK_SECTOR_SIZE);
-              list_push_back (&block_cache_active_queue, &bce->list_elem); 
+              list_push_back (&block_cache_active_queue, &bce->list_elem);
+              // printf ("*** read-ahed\n");
             }          
         }
     }
@@ -110,9 +116,11 @@ read_ahead_thread (void *aux UNUSED)
   lock_release (&block_cache_lock);
 }
 
+/* Initializes buffer cache module. */
 void
 block_cache_init (void) 
 {
+  /* Set up hash table and lists used to track buffer cache. */
   list_init (&block_cache_active_queue);
   list_init (&block_cache_unused_queue);
   list_init (&block_cache_read_queue);
@@ -120,18 +128,18 @@ block_cache_init (void)
   list_init (&block_cache_eviction_queue);
   hash_init (&block_cache_table, block_cache_hash, block_cache_less, NULL);
   lock_init (&block_cache_lock);
+  
+  /* Set up condition to wake up file I/O thread. */
   cond_init (&cond_read);
   cond_init (&cond_write);
   cond_init (&cond_evict);
-      
+  
+  /* Set up buffer cache data structures. */
   memset (block_cache, 0, MAX_CACHE_SECTORS * BLOCK_SECTOR_SIZE);
   int i = 0;
   for (i = 0; i < MAX_CACHE_SECTORS; i++)
     {
       struct block_cache_elem * bce = NULL;
-      //!! consider using malloc on demand.
-      // bce = malloc (sizeof *bce);
-      // ASSERT (bce != NULL);
       bce = &block_cache_elems[i];
       bce->block = (uint8_t *)((uint32_t)block_cache + (uint32_t)(i * BLOCK_SECTOR_SIZE));
       bce->state = BCM_UNUSED;
@@ -139,7 +147,7 @@ block_cache_init (void)
       list_push_back (&block_cache_unused_queue, &bce->list_elem);
     }
     
-    
+    /* Start file read-ahead thread & background cache saving thread. */
     thread_create ("read_ahead_thread", PRI_MIN, read_ahead_thread, NULL);
     thread_create ("periodic_write_thread", PRI_MIN + 1, periodic_write_thread, NULL);
 }
@@ -163,7 +171,8 @@ block_cache_less (const struct hash_elem *a_, const struct hash_elem *b_,
   return a->sector < b->sector;
 }
 
-struct block_cache_elem *
+/* Returns the block cache element stored in the cache. */
+struct block_cache_elem * 
 block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED)
 {
   struct block_cache_elem temp_bce;
@@ -179,12 +188,13 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED)
     }
     
   /* Rescue element before the eviction takes place */
-  if (bce && bce->state == BCM_EVICTING)
-    {
-      list_remove (&bce->list_elem);
-      bce->state = BCM_ACTIVE;
-      list_push_back (&block_cache_active_queue, &bce->list_elem);
-    }
+  // if (bce && bce->state == BCM_EVICTING)
+  // if (bce)
+  //   {
+  //     list_remove (&bce->list_elem);
+  //     bce->state = BCM_ACTIVE;
+  //     list_push_back (&block_cache_active_queue, &bce->list_elem);
+  //   }
   
   return bce;
 }
@@ -203,6 +213,8 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock UNUSED)
 //   return bce;
 // }
 
+//!!
+/* Evicts a buffer cache element */
 void
 block_cache_evict (struct lock * block_cache_lock)
 {
@@ -234,6 +246,9 @@ block_cache_evict (struct lock * block_cache_lock)
           // cond_wait (&cond_write, block_cache_lock);
     }
 
+
+  //!!! Move to while loop to protect against to implement rescue logic (will find another candidate if rescued)
+
   /* Evicts the buffer cache element */
   //!! move to eviction queue if needed to not block this thread.  otherwise, write here.
   //!! I'm still considering moving it to the eviction queue.  This will keep interfering
@@ -251,26 +266,31 @@ block_cache_evict (struct lock * block_cache_lock)
       lock_acquire (block_cache_lock);
     }
   
-  /* Check the block hasn't been rescued during file I/O */
+  /* Check that the block hasn't been rescued during file I/O. */
   if (bce->state == BCM_EVICTING)
     {
       bce->state = BCM_EVICTED;      
       hash_delete (&block_cache_table, &bce->hash_elem);
       list_push_back (&block_cache_unused_queue, &bce->list_elem);
     }
+  else
+    {
+      PANIC ("Rescue is not implemented");
+    }
 }
 
+/* Either 1) adds a buffer cache element into the buffer cache for the
+   requested sector if not found, or 2) returns the pre-existing buffer
+   cache element */
 struct block_cache_elem *
 block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock)
 {
   struct block_cache_elem * bce = block_cache_find (sector, block_cache_lock);
   
   if (!bce)
-    {      
+    {   
       if (list_empty (&block_cache_unused_queue))
-        {
-          block_cache_evict (block_cache_lock);
-        }
+        block_cache_evict (block_cache_lock);
 
       //!! Turn on if evicting in a separate file queue
       // while (list_empty (&block_cache_unused_queue))
@@ -298,6 +318,8 @@ block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock)
   return bce;
 }
 
+/* Returns the new or already existing block cache element for the sector
+   and reads in the next sector too */
 struct block_cache_elem *
 block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
 {
@@ -310,6 +332,7 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
   /* Read-ahead next sector is not loaded in cache */
   if (bce_next->state == BCM_READ)
     {
+      //!!no_remove
       list_remove (&bce_next->list_elem);
       list_push_back (&block_cache_read_queue, &bce_next->list_elem);
       cond_broadcast (&cond_read, block_cache_lock);
@@ -318,6 +341,7 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
   return bce;
 }
 
+/* Moves a block cache element as active */
 void
 block_cache_mark_active (struct block_cache_elem * bce, struct lock * block_cache_lock UNUSED)
 {
@@ -326,6 +350,8 @@ block_cache_mark_active (struct block_cache_elem * bce, struct lock * block_cach
   list_push_back (&block_cache_active_queue, &bce->list_elem);
 }
 
+//!! update comment if asynch
+/* Saves the buffer cache to disk synchronously */
 //!! will block all threads.  consider a less disruptive approach using the periodic_queue
 void
 block_cache_synchronize ()
@@ -356,6 +382,7 @@ block_cache_synchronize ()
             break;
           else if (bce->dirty)
             {
+              //!! a local buffer will make extra safe
               //!! async causes one test to fail.  check later
               // lock_release (&block_cache_lock);
               block_write (fs_device, bce->sector, bce->block);
@@ -370,6 +397,7 @@ block_cache_synchronize ()
   lock_release (&block_cache_lock);
 }
 
+/* Writes the provided buffer into the buffer cache */
 struct block_cache_elem *
 buffer_cache_write (struct block *fs_device UNUSED, block_sector_t sector_idx, const void *buffer)
 {
@@ -395,6 +423,7 @@ buffer_cache_write (struct block *fs_device UNUSED, block_sector_t sector_idx, c
   return bce;  
 }
 
+/* Reads the sector from the buffer cache into the caller's buffer */
 struct block_cache_elem *
 buffer_cache_read (struct block *fs_device UNUSED, block_sector_t sector_idx, void *buffer_)
 {
@@ -414,6 +443,8 @@ buffer_cache_read (struct block *fs_device UNUSED, block_sector_t sector_idx, vo
   //   }
   // printf("\n");
 
+
+  //!! add local buffer here like read-ahead to make extra thread safe
   /* Read sector into the cache, then partially copy
      into caller's buffer. */
   if (bce->state == BCM_READ)
