@@ -7,13 +7,12 @@
 #include "devices/block.h"
 
 /* Block cache element states */
-//!! Fill in comments
 enum block_cache_mode
   {
-    BCM_READ = 1,                        /* Panic on failure. */
-    BCM_EVICTED,                           /* Zero page contents. */
-    BCM_EVICTING,                           /* User page. */
-    BCM_UNUSED,
+    BCM_READ = 1,                       /* Needs to be read from disk. */
+    BCM_EVICTED,                        /* Was evicted. On unused queue. */
+    BCM_WRITING,                        /* Writing to disk.  Can be rescued. */
+    BCM_UNUSED,                         /* Never been used. On unused queue. */
     BCM_ACTIVE
   };
 
@@ -25,7 +24,7 @@ struct block_cache_elem
     block_sector_t sector;              /* Sector number of disk location. */
     uint8_t *block;                     /* Block data. */
     bool dirty;                         /* True if dirty. */
-    enum block_cache_mode state;                         /* Current state: Evicted, etc. */
+    enum block_cache_mode state;        /* Current state: Evicted, etc. */
     unsigned magic;                     /* Magic number. */
   };
 
