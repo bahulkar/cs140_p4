@@ -11,6 +11,9 @@
    retained, but much longer full path names must be allowed. */
 #define NAME_MAX 14
 
+/* Hard limit on full path lengths. */
+#define MAX_FULL_PATH (500)
+
 struct inode;
 
 /* Opening and closing directories. */
@@ -23,8 +26,16 @@ struct inode *dir_get_inode (struct dir *);
 
 /* Reading and writing. */
 bool dir_lookup (const struct dir *, const char *name, struct inode **);
-bool dir_add (struct dir *, const char *name, block_sector_t);
+bool dir_add (struct dir *, const char *name, block_sector_t, bool is_file);
 bool dir_remove (struct dir *, const char *name);
 bool dir_readdir (struct dir *, char name[NAME_MAX + 1]);
+
+/* Subdirectory support. */
+bool make_new_directory (const char *dir);
+bool change_dir (const char *dir);
+bool get_is_file (const char *name);
+struct dir *recursive_dir_open (const char *name);
+bool recursive_dir_lookup (const char *name,
+            struct inode **return_inode);
 
 #endif /* filesys/directory.h */

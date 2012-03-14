@@ -5,6 +5,8 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "threads/thread.h"
+#include "filesys/free-map.h"
 
 /* A directory. */
 struct dir 
@@ -19,7 +21,11 @@ struct dir_entry
     block_sector_t inode_sector;        /* Sector number of header. */
     char name[NAME_MAX + 1];            /* Null terminated file name. */
     bool in_use;                        /* In use or free? */
+    bool is_file;                       /* Is file or directory */
   };
+
+/* Cache the root director pointer. */
+struct dir * root_dir_ptr = NULL;
 
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
@@ -83,6 +89,24 @@ dir_get_inode (struct dir *dir)
   return dir->inode;
 }
 
+static bool
+is_directory_empty (const struct dir *dir)
+{
+  struct dir_entry e;
+  size_t ofs;
+
+  ASSERT (dir != NULL);
+  for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
+       ofs += sizeof e) 
+    {
+      if (e.in_use && (strcmp (".", e.name) && strcmp ("..", e.name)))
+        {
+          return false;
+        }
+    }
+  return true;
+}
+
 /* Searches DIR for a file with the given NAME.
    If successful, returns true, sets *EP to the directory entry
    if EP is non-null, and sets *OFSP to the byte offset of the
@@ -139,7 +163,7 @@ dir_lookup (const struct dir *dir, const char *name,
    Fails if NAME is invalid (i.e. too long) or a disk or memory
    error occurs. */
 bool
-dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
+dir_add (struct dir *dir, const char *name, block_sector_t inode_sector, bool is_file)
 {
   struct dir_entry e;
   off_t ofs;
@@ -169,6 +193,7 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
       break;
 
   /* Write slot. */
+  e.is_file = is_file;
   e.in_use = true;
   strlcpy (e.name, name, sizeof e.name);
   e.inode_sector = inode_sector;
@@ -196,6 +221,20 @@ dir_remove (struct dir *dir, const char *name)
   if (!lookup (dir, name, &e, &ofs))
     goto done;
 
+  /* Dont remove current working directory. */
+  if (e.inode_sector == thread_current ()->pwd_sector)
+    goto done;
+
+  /* Remove directory only if it is empty. */
+  if (!(e.is_file)) 
+    {
+      struct dir *cur_dir = dir_open (inode_open (e.inode_sector));
+      if (!is_directory_empty (cur_dir))
+        {
+          goto done;
+        }
+      dir_close (cur_dir);
+    }
   /* Open inode. */
   inode = inode_open (e.inode_sector);
   if (inode == NULL)
@@ -226,6 +265,15 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
   while (inode_read_at (dir->inode, &e, sizeof e, dir->pos) == sizeof e) 
     {
       dir->pos += sizeof e;
+      /* Skip over . and .. */
+      if (!strcmp (e.name, ".")) 
+        {
+          continue;
+        }
+      if (!strcmp (e.name, "..")) 
+        {
+          continue;
+        }
       if (e.in_use)
         {
           strlcpy (name, e.name, NAME_MAX + 1);
@@ -233,4 +281,329 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
         } 
     }
   return false;
+}
+
+bool
+recursive_dir_lookup (const char *name,
+            struct inode **return_inode) 
+{
+  char name_copy[MAX_FULL_PATH];
+  char *token = NULL, *save_ptr = NULL, *dir_name = name_copy;
+  struct dir *dir = NULL;
+  struct inode *inode = NULL;
+  struct dir * current_dir = NULL;
+  struct dir *parent_dir = NULL;
+  block_sector_t sector;
+  name_copy[0] = '\0';
+
+  if (strlen (name) > MAX_FULL_PATH)
+    {
+      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      return false;
+    }
+
+  /* Check if directory is relative or absolute. */
+  if (name[0] == '/') 
+    {
+      inode = inode_open (ROOT_DIR_SECTOR);
+    }
+  else
+  {
+      inode = inode_open (thread_current ()->pwd_sector);
+  }
+  /* Check for dir name validity and get parent dir details. */
+  strlcpy (name_copy, name, strlen (name) + 1);
+  for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
+       token = strtok_r (NULL, "/", &save_ptr))
+    {
+      dir_name = token;
+      dir = dir_open (inode);
+      parent_dir = dir;
+      if (dir_name[0] == '\0') 
+        {
+          dir_close (dir);
+          return false;
+        }
+      /* Only look for directories, not files. */
+      if (!(dir_lookup (dir, token, &inode)))
+        {
+          dir_close (dir);
+          return false;
+        }
+      dir_close (dir);
+    }
+  *return_inode = inode;
+  return true;
+}
+
+/* Makes a new directory. */
+bool
+make_new_directory (const char *name)
+{
+  char name_copy[MAX_FULL_PATH];
+  char *token = NULL, *save_ptr = NULL, *dir_name = name_copy;
+  struct dir *dir = NULL;
+  struct inode *inode = NULL;
+  struct dir * current_dir = NULL;
+  struct dir *parent_dir = NULL;
+  block_sector_t sector;
+  struct inode *parent_inode = NULL;
+  bool final_dir = false;
+  name_copy[0] = '\0';
+  struct dir_entry e;
+
+  if (name[0] == '\0')
+    {
+      return false;
+    }
+  if (strlen (name) > MAX_FULL_PATH)
+    {
+      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      return false;
+    }
+
+  /* Check if directory is relative or absolute. */
+  if (name[0] == '/')
+    {
+      inode = inode_open (ROOT_DIR_SECTOR);
+    }
+  else
+  {
+      inode = inode_open (thread_current ()->pwd_sector);
+  }
+  parent_inode = inode;
+  /* Check for dir name validity and get parent dir details. */
+  strlcpy (name_copy, name, strlen (name) + 1);
+  for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
+       token = strtok_r (NULL, "/", &save_ptr))
+    {
+      if (final_dir) 
+        {
+          break;
+        }
+      dir_name = token;
+      dir = dir_open (inode);
+      parent_dir = dir;
+      if (token[0] == '\0')
+        {
+          dir_close (dir);
+          return false;
+        }
+      if (!(dir_lookup (dir, token, &inode)))
+        {
+          final_dir = true;
+          //dir_close (dir);
+          continue;
+        }
+      /* Check that looked up entry is a directory (and not a file). */
+      lookup (dir, token, &e, NULL);
+      if (e.is_file)
+        {
+          dir_close (dir);
+          return false;
+        }
+      parent_inode = inode;
+      dir_close (dir);
+    }
+  /* Check to see if path is valid. */
+  if (token) 
+    {
+      ASSERT (dir);
+      dir_close (dir);
+      return false;
+    }
+
+  if (!(free_map_allocate (1, &sector)))
+    {
+      return false;
+    }
+  /*Create directory with 2 entries - for . and .. */
+  if (!dir_create (sector, 2))
+      return false; 
+
+  /* Create . and .. entries. */
+  current_dir = dir_open (inode_open (sector));
+  dir_add (current_dir, ".", sector, false);
+  dir_add (current_dir, "..", inode_get_inumber (parent_dir->inode), false);
+  dir_close (current_dir);
+  /* Add directory entry to parent directory. */
+  
+  if (!dir_add (parent_dir, dir_name, sector, false))
+    {
+      dir_close (parent_dir);
+      return false;
+    }
+  dir_close (parent_dir);
+  return true;
+}
+
+/* Changes current working directory. */
+bool
+change_dir (const char *name)
+{
+  char name_copy[MAX_FULL_PATH];
+  char *token = NULL, *save_ptr = NULL, *dir_name = name_copy;
+  struct dir *dir = NULL;
+  struct inode *inode = NULL;
+  struct dir * current_dir = NULL;
+  struct dir *parent_dir = NULL;
+  block_sector_t sector = thread_current ()->pwd_sector;
+  name_copy[0] = '\0';
+
+  if (strlen (name) > MAX_FULL_PATH)
+    {
+      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      return false;
+    }
+
+  /* Check if directory is relative or absolute. */
+  if (name[0] == '/') 
+    {
+      inode = inode_open (ROOT_DIR_SECTOR);
+    }
+  else
+  {
+      inode = inode_open (thread_current ()->pwd_sector);
+  }
+  /* Check for dir name validity and get parent dir details. */
+  strlcpy (name_copy, name, strlen (name) + 1);
+  for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
+       token = strtok_r (NULL, "/", &save_ptr))
+    {
+      dir_name = token;
+      dir = dir_open (inode);
+      parent_dir = dir;
+      /* Only look for directories, not files. */
+      if (!(dir_lookup (dir, token, &inode)))
+        {
+          dir_close (dir);
+          return false;
+        }
+      sector = inode_get_inumber (inode);
+      dir_close (dir);
+    }
+  inode_close (inode);
+  thread_current ()->pwd_sector = sector;
+  //printf("current dir now is at: %s, sector: %d\n", name, sector);
+  return true;
+}
+
+struct dir *
+recursive_dir_open (const char *name)
+{
+
+  char name_copy[MAX_FULL_PATH];
+  char *token = NULL, *save_ptr = NULL, *dir_name = name_copy;
+  struct dir *dir = NULL;
+  struct inode *inode = NULL;
+  struct dir * current_dir = NULL;
+  struct dir *parent_dir = NULL;
+  block_sector_t sector;
+  struct inode *parent_inode = NULL;
+  bool final_dir = false;
+  name_copy[0] = '\0';
+  block_sector_t parent_inode_sector;
+
+  if (strlen (name) > MAX_FULL_PATH)
+    {
+      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      return NULL;
+    }
+
+  /* Check if directory is relative or absolute. */
+  if (name[0] == '/') 
+    {
+      inode = inode_open (ROOT_DIR_SECTOR);
+      parent_inode_sector = ROOT_DIR_SECTOR;
+    }
+  else
+  {
+      inode = inode_open (thread_current ()->pwd_sector);
+      parent_inode_sector = thread_current ()->pwd_sector;
+  }
+  parent_inode = inode;
+  /* Check for dir name validity and get parent dir details. */
+  strlcpy (name_copy, name, strlen (name) + 1);
+  for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
+       token = strtok_r (NULL, "/", &save_ptr))
+    {
+      if (final_dir) 
+        {
+          break;
+        }
+      dir_name = token;
+      dir = dir_open (inode);
+      parent_dir = dir;
+      parent_inode_sector = inode_get_inumber (inode);
+      /* Only look for directories, not files. */
+      if (!(dir_lookup (dir, token, &inode)))
+        {
+          final_dir = true;
+          dir_close (dir);
+          continue;
+        }
+      parent_inode = inode;
+      dir_close (dir);
+    }
+  /* Check to see if path is valid. */
+  if (token) 
+    {
+      ASSERT (dir);
+      dir_close (dir);
+      return false;
+    }
+  return dir_open (inode_open (parent_inode_sector));
+}
+
+bool get_is_file (const char *name)
+{
+  char name_copy[MAX_FULL_PATH];
+  char *token = NULL, *save_ptr = NULL, *dir_name = name_copy;
+  struct dir *dir = NULL;
+  struct inode *inode = NULL;
+  struct dir * current_dir = NULL;
+  struct dir *parent_dir = NULL;
+  block_sector_t sector;
+  name_copy[0] = '\0';
+  struct dir_entry dir_entry;
+
+  if (!strcmp (name, "/"))
+    {
+      return false;
+    }
+
+  if (strlen (name) > MAX_FULL_PATH)
+    {
+      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      return false;
+    }
+
+  /* Check if directory is relative or absolute. */
+  if (name[0] == '/') 
+    {
+      inode = inode_open (ROOT_DIR_SECTOR);
+    }
+  else
+  {
+      inode = inode_open (thread_current ()->pwd_sector);
+  }
+  /* Check for dir name validity and get parent dir details. */
+  strlcpy (name_copy, name, strlen (name) + 1);
+  for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
+       token = strtok_r (NULL, "/", &save_ptr))
+    {
+      dir_name = token;
+      dir = dir_open (inode);
+      parent_dir = dir;
+      /* Only look for directories, not files. */
+      if (!(dir_lookup (dir, token, &inode)))
+        {
+          ASSERT (0);
+          dir_close (dir);
+          return false;
+        }
+      lookup (dir, token, &dir_entry, NULL);
+      dir_close (dir);
+    }
+  return dir_entry.is_file;
 }
