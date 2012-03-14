@@ -14,6 +14,7 @@
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
+#include "filesys/filesys.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -96,6 +97,9 @@ thread_init (void)
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);
+  initial_thread->pwd[0] = '/';
+  initial_thread->pwd[1] = '\0';
+  initial_thread->pwd_sector = ROOT_DIR_SECTOR;
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
 }
@@ -185,6 +189,8 @@ thread_create (const char *name, int priority,
   #ifdef USERPROG
   t->parent_tid = thread_current ()->tid;
   #endif
+  t->pwd_sector = thread_current ()->pwd_sector;
+  strlcpy (t->pwd, thread_current ()->pwd, sizeof (thread_current ()->pwd));
   tid = t->tid = allocate_tid ();
 
   /* Prepare thread for first run by initializing its stack.

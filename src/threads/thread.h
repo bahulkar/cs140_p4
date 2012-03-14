@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/synch.h"
+#include "filesys/directory.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -48,6 +49,8 @@ struct fd_list_elem
     int position;                       /* Offset from beginning of file
                                            of next byte to be read. */
     bool deleted;                       /* True if file is deleted. */
+    bool is_file;                       /* If fd represents file or dir.*/
+    int inumber;                        /* inumber for file/dir. */
   };
 
 /* A kernel thread or user process.
@@ -140,7 +143,8 @@ struct thread
     int fd_counter;                     /* Next available file
                                            descriptor. */
 #endif
-
+    char pwd[MAX_FULL_PATH];            /* Current working directory. */
+    block_sector_t pwd_sector;          /* Sector where pwd is stored. */
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };

@@ -248,7 +248,14 @@ process_exit (void)
        struct list_elem *e = list_pop_front (&cur->open_files);
        struct fd_list_elem *fd_elem = list_entry (
            e, struct fd_list_elem, elem);
-       file_close (fd_elem->file);
+       if (fd_elem->is_file)
+            {
+              file_close (fd_elem->file);
+            }
+          else
+            {
+              dir_close ((struct dir *) fd_elem->file);
+            }
        list_remove (e);
        free (fd_elem);
      }
@@ -411,6 +418,8 @@ load (const char **argv, int argc, void (**eip) (void), void **esp)
   fd_elem->file_name = file_name;
   fd_elem->deleted = false;
   fd_elem->file = file;
+  fd_elem->is_file = is_file (file_name);
+  fd_elem->inumber = get_inumber (file_name);
   list_push_back (&thread_current ()->open_files, &fd_elem->elem);
   lock_release (&file_lock);
 

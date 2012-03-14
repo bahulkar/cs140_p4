@@ -10,6 +10,7 @@
 #include <inttypes.h>
 #include "filesys/file.h"
 #include "filesys/filesys.h"
+#include "filesys/directory.h"
 #include "threads/malloc.h"
 #include "devices/input.h"
 #include "devices/shutdown.h"
@@ -23,7 +24,7 @@ typedef int pid_t;
 #define MAX_FILE_NAME_LENGTH 14    /* Current filesystem file name limit. */
 
 /* Number of arguments, indexed by syscall number. */
-static int lookup_table[13] = {0, 1, 1, 1, 2, 1, 1, 1, 3, 3, 2, 1, 1};
+static int lookup_table[20] = {0, 1, 1, 1, 2, 1, 1, 1, 3, 3, 2, 1, 1, 3, 3, 1, 1, 2, 1, 1};
 
 static void **pull_arguments (void *sp, int num_args);
 static int validate_stack (void **args, int num_args);
@@ -39,6 +40,10 @@ static int sys_wait_helper (void **args);
 static int sys_wait (pid_t pid);
 static int sys_create_helper (void **args);
 static bool sys_create (const char *file, unsigned initial_size);
+static int sys_mkdir_helper (void **args);
+static bool sys_mkdir (const char *name);
+static int sys_chdir_helper (void **args);
+static bool sys_chdir (const char *name);
 static int sys_remove_helper (void **args);
 static bool sys_remove (const char *file);
 static int sys_open_helper (void **args);
@@ -55,6 +60,12 @@ static unsigned sys_tell_helper (void **args);
 static unsigned sys_tell (int fd);
 static void sys_close_helper (void **args);
 static void sys_close (int fd);
+static bool sys_isdir_helper (void **args);
+static bool sys_isdir (int fd);
+static int sys_inumber_helper (void **args);
+static int sys_inumber (int fd);
+static bool sys_readdir_helper (void **args);
+static bool sys_readdir (int fd, char *name);
 
 extern struct lock file_lock; 
 
@@ -243,6 +254,26 @@ syscall_handler (struct intr_frame *f)
         sys_close_helper (args);
         break;
 
+      case SYS_CHDIR:
+        return_val = (int) sys_chdir_helper (args);
+        break;
+
+      case SYS_READDIR:
+        return_val = (int) sys_readdir_helper (args);
+        break;
+
+      case SYS_ISDIR:
+        return_val = sys_isdir_helper (args);
+        break;
+
+      case SYS_INUMBER:
+        return_val = sys_inumber_helper (args);
+        break;
+
+      case SYS_MKDIR:
+        return_val = (int) sys_mkdir_helper (args);
+        break;
+
       default:
         /* Call is unhandled */
         ASSERT (0);
@@ -335,6 +366,56 @@ sys_wait (pid_t pid)
   return process_wait (pid);
 }
 
+/* Helper function for sys_chdir(). Prepares user arguments. */
+static int
+sys_chdir_helper (void **args)
+{
+  if (validate_user_ptrs (args, 1, 1) == -1)
+    {
+      return -1;
+    }
+
+  const char *name = *((char **) args[1]);
+
+  return sys_chdir (name);
+}
+
+/* Changes working directory. */
+static bool
+sys_chdir (const char *name)
+{
+  lock_acquire (&file_lock);
+  bool success = change_dir (name);
+  lock_release (&file_lock);
+
+  return success;
+}
+
+/* Helper function for sys_mkdir(). Prepares user arguments. */
+static int
+sys_mkdir_helper (void **args)
+{
+  if (validate_user_ptrs (args, 1, 1) == -1)
+    {
+      return -1;
+    }
+
+  const char *name = *((char **) args[1]);
+
+  return sys_mkdir (name);
+}
+
+/* Makes new directory with given name */
+static bool
+sys_mkdir (const char *name)
+{
+  lock_acquire (&file_lock);
+  bool success = make_new_directory (name);
+  lock_release (&file_lock);
+
+  return success;
+}
+
 /* Helper function for sys_create(). Prepares user arguments. */
 static int
 sys_create_helper (void **args)
@@ -409,6 +490,13 @@ sys_open (const char *file_name)
 
   lock_acquire (&file_lock);
   struct file *file = filesys_open (file_name);
+  if (!file) 
+    {
+      lock_release (&file_lock);
+      return -1;
+    }
+  bool is_file_file = is_file (file_name);
+  int inumber = get_inumber (file_name);
   if (file) 
     {
       thread_current ()->fd_counter++;
@@ -419,6 +507,8 @@ sys_open (const char *file_name)
       fd_elem->file_name = file_name;
       fd_elem->deleted = false;
       fd_elem->file = file;
+      fd_elem->is_file = is_file_file;
+      fd_elem->inumber = inumber;
       list_push_back (&thread_current ()->open_files, &fd_elem->elem);
 
       return_val = fd_elem->fd;
@@ -466,6 +556,7 @@ sys_filesize (int fd)
 
   return filesize;
 }
+
 
 /* Helper function for sys_read(). Prepares user arguments. */
 static int
@@ -525,12 +616,62 @@ sys_read (int fd, void *buffer, unsigned size)
               e, struct fd_list_elem, elem);
           if (fd_elem->fd == fd) 
             {
+              if (!(fd_elem->is_file)) 
+                {
+                  return -1;
+                }
               return_val = file_read (fd_elem->file, buffer, size);
               break;
             }
         }
     }
     return return_val;
+}
+
+static bool 
+sys_readdir_helper (void **args)
+{
+  if (validate_user_ptrs (args, 1, 2) == -1)
+    {
+      return false;
+    }
+  int fd = *((int *) args[1]);
+  void *buffer = *((void **) args[2]);
+  if ((validate_user_memory_range (buffer, (NAME_MAX + 1))) == -1)
+    {
+      return false;
+    }
+  return sys_readdir (fd, buffer);
+}
+
+static bool 
+sys_readdir (int fd, char *name)
+{
+  struct dir *dir;
+  struct list_elem *e;
+  struct thread *cur = thread_current ();
+
+  lock_acquire (&file_lock);
+  for (e = list_begin (&cur->open_files); 
+       e != list_end (&cur->open_files);
+       e = list_next (e))
+    {
+      struct fd_list_elem *fd_elem = list_entry (
+          e, struct fd_list_elem, elem);
+      if (fd_elem->fd == fd) 
+        {
+          if (fd_elem->is_file) 
+            {
+              lock_release (&file_lock);
+              return false;
+            }
+          dir = (struct dir *) fd_elem->file;
+          break;
+        }
+    }
+  lock_release (&file_lock);
+
+  return dir_readdir (dir, name);
 }
 
 /* Helper function for sys_write(). Prepares user arguments. */
@@ -595,6 +736,11 @@ sys_write (int fd, const void *buffer, unsigned size)
               e, struct fd_list_elem, elem);
           if (fd_elem->fd == fd)
             {
+              if (!(fd_elem->is_file)) 
+                {
+                  lock_release (&file_lock);
+                  return -1;
+                }
               lock_release (&file_lock);
               return (file_write (fd_elem->file, buffer, size));
             }
@@ -681,6 +827,70 @@ sys_tell (int fd)
   return return_val;
 }
 
+static int
+sys_inumber_helper (void **args)
+{
+  int fd = *((int *) args[1]);
+
+  return sys_inumber (fd);
+}
+
+static int
+sys_inumber (int fd)
+{
+  struct thread *cur = thread_current ();
+  struct list_elem *e;
+  int inumber;
+
+  lock_acquire (&file_lock);
+  for (e = list_begin (&cur->open_files); 
+       e != list_end (&cur->open_files);
+       e = list_next (e))
+    {
+      struct fd_list_elem *fd_elem = list_entry (
+          e, struct fd_list_elem, elem);
+      if (fd_elem->fd == fd) 
+        {
+          inumber = fd_elem->inumber;
+          break;
+        }
+    }
+  lock_release (&file_lock);
+return inumber;
+}
+
+static bool
+sys_isdir_helper (void **args)
+{
+  int fd = *((int *) args[1]);
+
+  return sys_isdir (fd);
+}
+
+static bool
+sys_isdir (int fd)
+{
+  struct thread *cur = thread_current ();
+  struct list_elem *e;
+  bool is_dir = false;
+
+  lock_acquire (&file_lock);
+  for (e = list_begin (&cur->open_files); 
+       e != list_end (&cur->open_files);
+       e = list_next (e))
+    {
+      struct fd_list_elem *fd_elem = list_entry (
+          e, struct fd_list_elem, elem);
+      if (fd_elem->fd == fd) 
+        {
+          is_dir = !fd_elem->is_file;
+          break;
+        }
+    }
+  lock_release (&file_lock);
+return is_dir;
+}
+
 /* Helper function for sys_close(). Prepares user arguments. */
 static void
 sys_close_helper (void **args)
@@ -708,7 +918,14 @@ sys_close (int fd)
           e, struct fd_list_elem, elem);
       if (fd_elem->fd == fd) 
         {
-          file_close (fd_elem->file);
+          if (fd_elem->is_file)
+            {
+              file_close (fd_elem->file);
+            }
+          else
+            {
+              dir_close ((struct dir *) fd_elem->file);
+            }
           list_remove (e);
           free (fd_elem);
           break;
