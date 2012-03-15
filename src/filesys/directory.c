@@ -149,9 +149,13 @@ dir_lookup (const struct dir *dir, const char *name,
   ASSERT (name != NULL);
 
   if (lookup (dir, name, &e, NULL))
+  {
     *inode = inode_open (e.inode_sector);
+  }
   else
+  {
     *inode = NULL;
+  }
 
   return *inode != NULL;
 }
@@ -538,6 +542,7 @@ recursive_dir_open (const char *name)
       /* Only look for directories, not files. */
       if (!(dir_lookup (dir, token, &inode)))
         {
+          inode = NULL;
           final_dir = true;
           dir_close (dir);
           continue;
@@ -551,6 +556,10 @@ recursive_dir_open (const char *name)
       ASSERT (dir);
       dir_close (dir);
       return false;
+    }
+  if (inode)
+    {
+      inode_close (inode);
     }
   return dir_open (inode_open (parent_inode_sector));
 }
@@ -605,5 +614,6 @@ bool get_is_file (const char *name)
       lookup (dir, token, &dir_entry, NULL);
       dir_close (dir);
     }
+  inode_close (inode);
   return dir_entry.is_file;
 }

@@ -86,7 +86,6 @@ filesys_create (const char *name, off_t initial_size)
   if (!success && inode_sector != 0) 
     free_map_release (inode_sector, 1);
   dir_close (dir);
-
   return success;
 }
 
@@ -133,12 +132,15 @@ int
 get_inumber (const char *file_name)
 {
   struct inode *inode = NULL;
+  int inode_number;
   if (!strcmp (file_name, "/"))
     {
       return ROOT_DIR_SECTOR;
     }
   ASSERT (recursive_dir_lookup (file_name, &inode));
-  return inode_get_inumber (inode);
+  inode_number = inode_get_inumber (inode);
+  inode_close (inode);
+  return inode_number;
 }
 
 /* Deletes the file named NAME.
