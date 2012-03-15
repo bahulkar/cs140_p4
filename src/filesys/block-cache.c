@@ -89,9 +89,10 @@ read_ahead_thread (void *aux UNUSED)
   /* Waits for pending reads, and then loads them into the cache */
   while (true)
     {
+      // printf ("[");
       cond_wait (&cond_read_queue_add, &block_cache_lock);
       // printf ("read-ahead 1\n");
-      
+      // printf ("]");      
       
       while (!list_empty (&block_cache_read_queue))
         {
@@ -195,21 +196,21 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock)
       if (hash_e)
         bce = hash_entry (hash_e, struct block_cache_elem, hash_elem);
 //$$$
-      break;
-      // if (bce && bce->state == BCM_WRITING) {
-      //   printf ("<");
-      //   // cond_wait (&cond_write, block_cache_lock);
-      //   printf (">");
-      // }
-      // //!! not sure if should block on reading if it's read-ahead 
-      // else if (bce && bce->state == BCM_READING ) {
-      //   printf ("{");
-      //   // cond_wait (&cond_read, block_cache_lock);
-      //   printf ("}");
-      // }
-      // else {
-      //   break;
-      // }        
+      // break;
+      if (bce && bce->state == BCM_WRITING) {
+        // printf ("<");
+        cond_wait (&cond_write, block_cache_lock);
+        // printf (">");
+      }
+      //!! not sure if should block on reading if it's read-ahead 
+      else if (bce && bce->state == BCM_READING ) {
+        // printf ("{");
+        cond_wait (&cond_read, block_cache_lock);
+        // printf ("}");
+      }
+      else {
+        break;
+      }        
     } while (true);
 
   if (bce)
@@ -240,14 +241,13 @@ block_cache_evict (struct lock * block_cache_lock)
           bce = list_entry (list_elem, struct block_cache_elem, list_elem);
 //!!$$
           if (bce->state == BCM_READING || bce->state == BCM_PINNED)
-             {
-               list_push_back (&block_cache_active_queue, list_elem);
+            {
+              list_push_back (&block_cache_active_queue, list_elem);
               list_elem = NULL;
               bce = NULL;
             }
           else
             {
-          // printf("@");
               ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);   
             }
         }
@@ -356,7 +356,8 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
   bce = block_cache_add_internal (sector, block_cache_lock, false);
 
   //!! check for max sector?
-  //$$ bce_next = block_cache_add_internal (sector + 1, block_cache_lock, true);
+  //$$ 
+  // bce_next = block_cache_add_internal (sector + 1, block_cache_lock, true);
   
   ASSERT (bce->sector == sector);
   if (bce->state == BCM_PINNED)
@@ -456,12 +457,7 @@ buffer_cache_write_ofs (struct block *fs_device, block_sector_t sector_idx, int 
   
   bce->dirty = true;
   
-  block_cache_mark_active (bce, &block_cache_lock);
-  
-  //!! change to i/o since a write happened too.
-  //$$ 
-  // cond_broadcast (&cond_read, &block_cache_lock); //!! bce not safe on return, no one using it
-  
+  block_cache_mark_active (bce, &block_cache_lock);  
 
   lock_release (&block_cache_lock);
   
