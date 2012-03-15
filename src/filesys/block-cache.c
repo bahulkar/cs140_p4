@@ -210,7 +210,8 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock)
       }
       else {
         break;
-      }        
+      }
+      // printf ("^");
     } while (true);
 
   if (bce)
@@ -242,6 +243,9 @@ block_cache_evict (struct lock * block_cache_lock)
 //!!$$
           if (bce->state == BCM_READING || bce->state == BCM_PINNED)
             {
+              printf ("|");
+              //!! This breaks if cond_wait is below list_push_back
+              cond_wait (&cond_read, block_cache_lock);              
               list_push_back (&block_cache_active_queue, list_elem);
               list_elem = NULL;
               bce = NULL;
@@ -251,6 +255,12 @@ block_cache_evict (struct lock * block_cache_lock)
               ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);   
             }
         }
+      else 
+        {
+          // printf (":");
+        }
+      // printf (";");
+      
       //!! Consider panicking if we get back to our start point
     }
     
@@ -298,7 +308,6 @@ block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock,
       if (!read_ahead && bce->state == BCM_READ)
         {
           /* Bump items from read_ahead_queue if we are trying to read it now */
-//!!!      
           validate_list_element (&bce->list_elem);
           list_remove (&bce->list_elem);
           list_push_back (&block_cache_active_queue, &bce->list_elem);
@@ -354,11 +363,23 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
   struct block_cache_elem * bce_next = NULL;
 
   bce = block_cache_add_internal (sector, block_cache_lock, false);
+  
+  bool removed = false;
+  // if (bce->state != BCM_WRITING && bce->state != BCM_READING)
+  //   {
+  //     list_remove (bce);
+  //     removed = true;
+  //   }
 
   //!! check for max sector?
   //$$ 
-  // bce_next = block_cache_add_internal (sector + 1, block_cache_lock, true);
+  bce_next = block_cache_add_internal (sector + 1, block_cache_lock, true);
   
+  // if (removed)
+  //   {
+  //     list_push_back (&block_cache_active_queue, &bce->list_elem);
+  //   }
+    
   ASSERT (bce->sector == sector);
   if (bce->state == BCM_PINNED)
     bce->state = BCM_READ;
@@ -434,7 +455,10 @@ buffer_cache_write_ofs (struct block *fs_device, block_sector_t sector_idx, int 
   ASSERT (sector_idx < 10000)
   
   struct block_cache_elem * bce = NULL;
-  bce = block_cache_add (sector_idx, &block_cache_lock);  
+  bce = block_cache_add (sector_idx, &block_cache_lock);
+  
+  
+  ASSERT (bce->state == BCM_READ || bce->state == BCM_ACTIVE);
   
   /* If the sector contains data before or after the chunk
      we're writing, then we need to read in the sector
@@ -484,14 +508,17 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
   uint8_t *buffer = buffer_;
   
   bce = block_cache_add (sector_idx, &block_cache_lock);
-  
+    
   ASSERT (bce->state == BCM_READ || bce->state == BCM_ACTIVE);
 
-  //!! add local buffer here like read-ahead to make extra thread safe
   /* Read sector into the cache, then partially copy
      into caller's buffer. */
   if (bce->state == BCM_READ)
     {
+      //!! want to take it off the current queue (but must check that it's on one)
+      validate_list_element (&bce->list_elem);
+      list_remove (&bce->list_elem);
+      
       bce->state = BCM_READING;
       
       lock_release (&block_cache_lock);
@@ -501,10 +528,14 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
       /* Check that the block hasn't been read and/or written
          by another thread before overwriting with disk contents */
       ASSERT (bce->state == BCM_READING);
+      
+      bce->state = BCM_ACTIVE;
+      list_push_back (&block_cache_active_queue, &bce->list_elem);  
+      validate_list_element (&bce->list_elem);        
     }  
 
   memcpy (buffer, bce->block + sector_ofs, chunk_size);  
-  block_cache_mark_active (bce, &block_cache_lock);  
+// block_cache_mark_active (bce, &block_cache_lock);  
   //$$ 
   cond_broadcast (&cond_read, &block_cache_lock); //!! bce not safe on return, no one using it
 
