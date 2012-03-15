@@ -24,10 +24,13 @@ struct block_cache_elem *block_cache_add_internal (block_sector_t sector, struct
 void block_cache_evict (struct lock * block_cache_lock);
 void validate_list_element (struct list_elem * le);
 void print_buffer_cache_block (struct block_cache_elem * bce);
+struct list_elem *advance_clock_hand (void);
 
 
 static thread_func periodic_write_thread; // (void);
 static thread_func read_ahead_thread; // (void);
+
+static struct list_elem * clock_hand_le;
 
 /* Block cache data storage. */
 static uint8_t block_cache[MAX_CACHE_SECTORS][BLOCK_SECTOR_SIZE];
@@ -221,68 +224,143 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock)
   return bce;
 }
 
+/* Advances the clock hand, or return NULL if the next and current element are the same. */
+struct list_elem *
+advance_clock_hand ()
+{
+  struct list_elem * prev_le = NULL;
+  if (!clock_hand_le && !list_empty (&block_cache_active_queue))
+    clock_hand_le = list_begin (&block_cache_active_queue);
+    
+  if (clock_hand_le)
+    {
+      ASSERT (clock_hand_le);
+      ASSERT (!list_empty (&block_cache_active_queue));
+
+      /* Advance the clock hand */
+      if (clock_hand_le == list_back (&block_cache_active_queue))
+        clock_hand_le = list_begin (&block_cache_active_queue);
+      else
+        clock_hand_le = list_next (clock_hand_le);
+    
+      if (clock_hand_le == prev_le)
+        clock_hand_le = NULL;
+    }
+    
+  return clock_hand_le;
+}
+
+
 //!!
 /* Evicts a buffer cache element */
 void
 block_cache_evict (struct lock * block_cache_lock)
 {
-  struct list_elem * list_elem = NULL;
   struct block_cache_elem * bce = NULL;
+  struct list_elem * clock_hand_le = NULL;
+  
+  clock_hand_le = advance_clock_hand ();
+  
+  while (true)
+    { 
+      //!! cond_wait if we get back to the same place (NULL?)
+      printf ("@");
+      
+      if (!clock_hand_le)
+        {
+          printf ("-");
+          cond_wait (&cond_read, block_cache_lock);
+          clock_hand_le = advance_clock_hand ();
+          continue;
+        }
+
+      bce = list_entry (clock_hand_le, struct block_cache_elem, list_elem);
+      
+      if (bce->state == BCM_READING || bce->state == BCM_PINNED)
+        {
+          clock_hand_le = advance_clock_hand ();
+          continue;
+        }
+        
+      if (bce->accessed)
+        {
+          bce->accessed = false;
+          clock_hand_le = advance_clock_hand ();
+          continue;
+        }
+      
+      printf ("x");
+      
+      /* Advance the hand once more before editing the list */
+      clock_hand_le = advance_clock_hand ();
+      
+      ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);
+      
+      /* Evicts the buffer cache element */
+      list_remove (&bce->list_elem);
+      bce->state = BCM_WRITING;
+
+      /* Write the block back to disk */
+      if (bce->dirty)
+        {
+          lock_release (block_cache_lock);
+          block_write (fs_device, bce->sector, bce->block);
+          lock_acquire (block_cache_lock);
+        }
+
+      ASSERT (bce->state == BCM_WRITING);
+      //ASSERT (bce doesn't belong to any queue);
+
+      /* Once done evicting, place the block on the unused queue */
+      hash_delete (&block_cache_table, &bce->hash_elem);
+      bce->state = BCM_EVICTED;
+      list_push_back (&block_cache_unused_queue, &bce->list_elem);
+      validate_list_element (&bce->list_elem);
+      
+      cond_broadcast (&cond_write, block_cache_lock);
+      
+      break;
+    }
+    
+    
   
   /* Find a buffer cache element to evict */
   // FIFO Algorithm
   //!! busy waits!!
-  while (!list_elem)
-    {
-      /* Pull from active queue, but still in hash so that other threads will block */
-      list_elem = list_pop_front (&block_cache_active_queue);
-      if (list_elem)
-        {
-          bce = list_entry (list_elem, struct block_cache_elem, list_elem);
-//!!$$
-          if (bce->state == BCM_READING || bce->state == BCM_PINNED)
-            {
-              // printf ("|");
-              //!! This breaks if cond_wait is below list_push_back
-              cond_wait (&cond_read, block_cache_lock);              
-              list_push_back (&block_cache_active_queue, list_elem);
-              list_elem = NULL;
-              bce = NULL;
-            }
-          else
-            {
-              ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);   
-            }
-        }
-      else 
-        {
-          // printf (":");
-        }
-      // printf (";");
-      
-      //!! Consider panicking if we get back to our start point
-    }
-    
-  /* Evicts the buffer cache element */
-  bce->state = BCM_WRITING;
-  
-  /* Write the block back to disk */
-  if (bce->dirty)
-    {
-      lock_release (block_cache_lock);
-      block_write (fs_device, bce->sector, bce->block);
-      lock_acquire (block_cache_lock);
-    }
+//   while (!list_elem)
+//     {
+//       /* Pull from active queue, but still in hash so that other threads will block */
+//       list_elem = list_pop_front (&block_cache_active_queue);
+//       if (list_elem)
+//         {
+//           bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+// //!!$$
+//           if (bce->state == BCM_READING || bce->state == BCM_PINNED)
+//             {
+//               // printf ("|");
+//               //!! This breaks if cond_wait is below list_push_back
+//               cond_wait (&cond_read, block_cache_lock);              
+//               list_push_back (&block_cache_active_queue, list_elem);
+//               list_elem = NULL;
+//               bce = NULL;
+//             }
+//           else
+//             {
+//               ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);   
+//             }
+//         }
+//       else 
+//         {
+//           // printf (":");
+//         }
+//       // printf (";");
+//       
+//       //!! Consider panicking if we get back to our start point
+//     }
 
-  ASSERT (bce->state == BCM_WRITING);
-  //ASSERT (bce doesn't belong to any queue);
+  /* Clock algorithm */
   
-  /* Once done evicting, place the block on the unused queue */
-  hash_delete (&block_cache_table, &bce->hash_elem);
-  bce->state = BCM_EVICTED;
-  list_push_back (&block_cache_unused_queue, &bce->list_elem);
-  validate_list_element (&bce->list_elem);
-  cond_broadcast (&cond_write, block_cache_lock);
+    
 }
 
 /* Either 1) adds a buffer cache element into the buffer cache for the

@@ -27,6 +27,7 @@ struct block_cache_elem
     block_sector_t sector;              /* Sector number of disk location. */
     uint8_t *block;                     /* Block data. */
     bool dirty;                         /* True if dirty. */
+    bool accessed;                      /* True after accesses. */
     enum block_cache_mode state;        /* Current state: Evicted, etc. */
     unsigned magic;                     /* Magic number. */
   };
