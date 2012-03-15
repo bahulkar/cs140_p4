@@ -38,6 +38,17 @@ struct inode_disk
     block_sector_t double_index;          /* Double index. */
   };
 
+struct lock cur_inode_list_lock;
+struct list cur_inode_list;
+
+struct cur_inode_list_entry
+{
+  struct list_elem elem;      /* Hash table element. */
+  block_sector_t inumber;     /* inumber for the inode. */
+  struct condition cond;      /* cond var for synchronization. */
+  bool currently_growing;     /* file growth in progress. */
+};
+
 /* Returns the number of sectors to allocate for an inode SIZE
    bytes long. */
 static inline size_t
@@ -106,6 +117,8 @@ static struct list open_inodes;
 void
 inode_init (void) 
 {
+  lock_init (&cur_inode_list_lock);
+  list_init (&cur_inode_list);
   list_init (&open_inodes);
 }
 
@@ -436,8 +449,8 @@ exit:
 }
 
 /* Grows a file based on requested size and offset.*/
-bool
-grow_file (struct inode *inode, off_t size, off_t offset)
+static bool
+grow_file (struct inode *inode, off_t size, off_t offset, struct cur_inode_list_entry **cur_entry)
 {
   bool success = false;
   uint32_t total_extra_sectors = 0;
@@ -452,6 +465,46 @@ grow_file (struct inode *inode, off_t size, off_t offset)
   uint32_t start_l2_sector = 0;
   uint32_t current_total_sectors = DIV_ROUND_UP (current_length, BLOCK_SECTOR_SIZE);
   uint32_t final_total_sectors = DIV_ROUND_UP (final_length, BLOCK_SECTOR_SIZE);
+
+  /* Check for and prevent simultaneous growth. */
+  struct list_elem *e;
+  struct cur_inode_list_entry *cur_inode_list_entry = NULL;
+  block_sector_t inumber = inode_get_inumber (inode);
+  lock_acquire (&cur_inode_list_lock);
+  bool entry_present = false;
+  while (1) {
+      for (e = list_begin (&cur_inode_list); 
+           e != list_end (&cur_inode_list);
+           e = list_next (e))
+        {
+          cur_inode_list_entry = list_entry (e, struct cur_inode_list_entry, elem);
+          if (cur_inode_list_entry->inumber == inumber)
+            {
+              entry_present = true;
+              break;
+            }
+        }
+      if (entry_present && cur_inode_list_entry->currently_growing) 
+        {
+          cond_wait (&cur_inode_list_entry->cond, &cur_inode_list_lock);
+        }
+      else if (entry_present) 
+        {
+          *cur_entry = cur_inode_list_entry;
+          break;
+        }
+      else
+        {
+          struct cur_inode_list_entry *inode_entry = malloc (sizeof (struct cur_inode_list_entry));
+          inode_entry->inumber = inumber;
+          cond_init (&inode_entry->cond);
+          inode_entry->currently_growing = true;
+          list_push_back (&cur_inode_list, &inode_entry->elem);
+          *cur_entry = inode_entry;
+          break;
+        }
+  }
+  lock_release (&cur_inode_list_lock);
 
   /* Calculate number of sectors needed in each zone*/
   if (current_length < SINGLE_INDEX_THRESHOLD) 
@@ -665,7 +718,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 {
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
+  bool file_growth_needed = false;
   const off_t current_upper_length = (DIV_ROUND_UP(inode_length (inode), BLOCK_SECTOR_SIZE)) * BLOCK_SECTOR_SIZE;
+  struct cur_inode_list_entry *inode_entry = NULL;
 
   ASSERT ((size + offset) < MAX_FILE_SIZE);
 
@@ -675,7 +730,8 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   /* Check if file growth is needed and accordingly grow it. */
   if (((offset + size) > inode_length (inode)) && ((offset + size) > current_upper_length)) 
     {
-      if (!grow_file (inode, size, offset)) 
+      file_growth_needed = true;
+      if (!grow_file (inode, size, offset, &inode_entry)) 
         {
           printf ("Error growing file\n");
           return 0;
@@ -713,6 +769,13 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       bytes_written += chunk_size;
     }
 
+  if (file_growth_needed)
+    {
+      lock_acquire (&cur_inode_list_lock);
+      inode_entry->currently_growing = false;
+      cond_signal (&inode_entry->cond, &cur_inode_list_lock);
+      lock_release (&cur_inode_list_lock);
+    }
   return bytes_written;
 }
 

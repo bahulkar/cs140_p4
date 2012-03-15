@@ -19,7 +19,6 @@ off_t inode_write_at (struct inode *, const void *, off_t size, off_t offset);
 void inode_deny_write (struct inode *);
 void inode_allow_write (struct inode *);
 off_t inode_length (const struct inode *);
-bool grow_file (struct inode *inode, off_t size, off_t offset);
 bool grow_l0 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors);
 bool grow_l1 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors);
 bool grow_l2 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors);
