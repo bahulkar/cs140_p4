@@ -5,13 +5,16 @@
 #include <list.h>
 #include <hash.h>
 #include "devices/block.h"
+#include "filesys/off_t.h"
 
 /* Block cache element states */
 enum block_cache_mode
   {
-    BCM_READ = 1,                       /* Needs to be read from disk. */
+    BCM_READ = 1,                       /* Needs to be read from disk. Active queue. */
+    BCM_READING,                        /* Reading from disk. Active queue. */
+    BCM_WRITING,                        /* Writing to disk. No queue. */
     BCM_EVICTED,                        /* Was evicted. On unused queue. */
-    BCM_WRITING,                        /* Writing to disk.  Can be rescued. */
+    BCM_PINNED,
     BCM_UNUSED,                         /* Never been used. On unused queue. */
     BCM_ACTIVE
   };
@@ -34,7 +37,9 @@ struct lock block_cache_lock;
 void block_cache_init (void);
 void block_cache_synchronize (void);
 struct block_cache_elem *buffer_cache_write (struct block *fs_device, block_sector_t sector_idx, const void *buffer);
+struct block_cache_elem *buffer_cache_write_ofs (struct block *fs_device, block_sector_t sector_idx, int sector_ofs, const void *buffer, int chunk_size);
 struct block_cache_elem *buffer_cache_read (struct block *fs_device, block_sector_t sector_idx, void *buffer);
+struct block_cache_elem *buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int sector_ofs, void *buffer, int chunk_size);
 void block_cache_mark_active (struct block_cache_elem * bce, struct lock * block_cache_lock);
 struct block_cache_elem *block_cache_add (block_sector_t sector, struct lock * block_cache_lock);
 struct block_cache_elem *block_cache_find (block_sector_t sector, struct lock * block_cache_lock);
