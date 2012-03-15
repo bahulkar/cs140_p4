@@ -13,7 +13,7 @@
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
 /* Length of index array of an inode. */
-#define INDEX_ARRAY_LENGTH (125)
+#define INDEX_ARRAY_LENGTH (124)
 /* Maximum sector entries that can fit in an single index inode. */
 #define MAX_SECTOR_ENTRIES_PER_INODE (BLOCK_SECTOR_SIZE / sizeof (block_sector_t))
 /* Number of bytes addressable by a second level inode. */
@@ -32,6 +32,7 @@
 struct inode_disk
   {
     off_t length;                         /* File size in bytes. */
+    unsigned magic;                       /* Magic number. */
     block_sector_t index[INDEX_ARRAY_LENGTH]; /* Index array. */
     block_sector_t single_index;          /* Single index. */
     block_sector_t double_index;          /* Double index. */
@@ -351,6 +352,7 @@ inode_create (block_sector_t sector, off_t length)
     }
   size_t sectors = bytes_to_sectors (length);
   disk_inode->length = length;
+  disk_inode->magic = INODE_MAGIC;
 
   /* Allocate sectors for actual file and write 0's. */
   static char zeros[BLOCK_SECTOR_SIZE];
