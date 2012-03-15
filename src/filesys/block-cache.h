@@ -11,8 +11,10 @@
 enum block_cache_mode
   {
     BCM_READ = 1,                       /* Needs to be read from disk. Active queue. */
+    BCM_READING,                        /* Reading from disk. Active queue. */
     BCM_WRITING,                        /* Writing to disk. No queue. */
     BCM_EVICTED,                        /* Was evicted. On unused queue. */
+    BCM_PINNED,
     BCM_UNUSED,                         /* Never been used. On unused queue. */
     BCM_ACTIVE
   };
