@@ -10,7 +10,6 @@
 #include "threads/synch.h"
 #include <stdio.h>
 
-#define TEJAS_DEBUG 0
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
 /* Length of index array of an inode. */
@@ -545,9 +544,6 @@ inode_open (block_sector_t sector)
   inode = malloc (sizeof *inode);
   if (inode == NULL)
   {
-    #if TEJAS_DEBUG
-    printf("malloc failed\n");
-    #endif
     return NULL;
   }
 
