@@ -32,6 +32,20 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 
 >> A2: What is the maximum size of a file supported by your inode
 >> structure?  Show your work.
+Sector size: 512 bytes
+Each sector entry needs 4 bytes of storage
+Each sector can store (512/4)=128 sector entries.
+Inode structure:
+1. 4 bytes to store file length
+2. 125 direct index entries -> can addresses 125 * 512 = 64000 bytes.
+3. 1 direct index entry -> can addresses 128 * 512 = 65536 bytes.
+3. 1 doubly-indirect index entry -> can addresses 128 * (65536) = 8388608
+   bytes.
+Total file size supported:
+  64000
++ 65536
++ 8388608
+= 8518144 bytes > 8MB.
 
 ---- SYNCHRONIZATION ----
 
@@ -59,6 +73,18 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 >> indirect blocks?  If not, why did you choose an alternative inode
 >> structure, and what advantages and disadvantages does your
 >> structure have, compared to a multilevel index?
+Yes, our inode structure is a multilevel index.
+It has 4 bytes for file length, 125 direct index entries, 1 single index
+entry and 1 double index entry.
+This design has the following advantages:
+1. It makes full use of the inode space.
+2. It allows for file growth without fragmentation.
+3. It allows accesses of files unto (125 * 512) bytes without any need
+for extra indirection.
+4. It allows accesses of files upto ((125 * 512) + (128 * 512))bytes with 
+only one extra level of indirection.
+5. It allows files to grow upto ((125 * 512) + (128 * 512) + (128 * (128
+ * 512)))bytes.
 
 			    SUBDIRECTORIES
 			    ==============
@@ -73,6 +99,23 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 
 >> B2: Describe your code for traversing a user-specified path.  How
 >> do traversals of absolute and relative paths differ?
+An absolute path starts with '/'
+Any other path is relative to the current working directory.
+We store the current working directory's inumber in the thread struct.
+And the root directory's inumber is fixed.
+Also, whenever any directory is created (including root), 2 entries
+are added - 
+one named '.' which is for the newly created directory.
+one named '..' which is for its parent directory.
+Thus given any path, we simply tokenize the path using '/' as a 
+delimiter and we lookup the token in its parent directory, and hence
+can traverse the entire path.
+
+Absolute and relative path traversal differ only in the way that they 
+start out with different parent directories (Absolute paths have root
+as their parent directory, and relative paths have the current working
+directory as their parent directory). After that point, the traversal
+mechanism is the same as described above.
 
 ---- SYNCHRONIZATION ----
 
@@ -90,6 +133,15 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 
 >> B6: Explain why you chose to represent the current directory of a
 >> process the way you did.
+We chose to represent the current directory of a process by its number.
+This is for 2 reasons:
+1. The number for a directory remains the same for the entire lifetime
+of the directory.
+2. Given an inumber, you can directly access the directory and its
+entries without need for any pre-traversal. Every directory has entries 
+for '.' and '..' which permit easy relative path traversal starting from
+the current working directory.
+
 
 			     BUFFER CACHE
 			     ============
