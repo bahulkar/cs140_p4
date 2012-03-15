@@ -76,7 +76,6 @@ periodic_write_thread (void *aux UNUSED)
     }
 }
 
-
 //!! Read-ahead is currently disabled
 /* Thread performs read-aheads in the background */
 static void
@@ -361,25 +360,13 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
 {
   struct block_cache_elem * bce = NULL;
   struct block_cache_elem * bce_next = NULL;
-
+  
+  /* Prepares the buffer cache element for the requested sector */
   bce = block_cache_add_internal (sector, block_cache_lock, false);
   
-  bool removed = false;
-  // if (bce->state != BCM_WRITING && bce->state != BCM_READING)
-  //   {
-  //     list_remove (bce);
-  //     removed = true;
-  //   }
-
-  //!! check for max sector?
-  //$$ 
+  /* Starts reading the next sector on a background thread */
   bce_next = block_cache_add_internal (sector + 1, block_cache_lock, true);
-  
-  // if (removed)
-  //   {
-  //     list_push_back (&block_cache_active_queue, &bce->list_elem);
-  //   }
-    
+      
   ASSERT (bce->sector == sector);
   if (bce->state == BCM_PINNED)
     bce->state = BCM_READ;
@@ -538,11 +525,8 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
       validate_list_element (&bce->list_elem);        
     }  
 
-  memcpy (buffer, bce->block + sector_ofs, chunk_size);  
-// block_cache_mark_active (bce, &block_cache_lock);  
-  //$$ 
-  cond_broadcast (&cond_read, &block_cache_lock); //!! bce not safe on return, no one using it
-
+  memcpy (buffer, bce->block + sector_ofs, chunk_size);
+  cond_broadcast (&cond_read, &block_cache_lock);
   lock_release (&block_cache_lock);
   
   return bce;
