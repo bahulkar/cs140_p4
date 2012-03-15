@@ -8,6 +8,8 @@
 #include "threads/thread.h"
 #include "filesys/free-map.h"
 
+#define TEJAS_DEBUG 0
+
 /* A directory. */
 struct dir 
   {
@@ -149,9 +151,22 @@ dir_lookup (const struct dir *dir, const char *name,
   ASSERT (name != NULL);
 
   if (lookup (dir, name, &e, NULL))
+  {
     *inode = inode_open (e.inode_sector);
+    #if TEJAS_DEBUG
+    if (*inode == NULL) {
+        printf("lookup succeeded but inode_open failed. trying to open sector: %d\n", e.inode_sector);
+    }
+    #endif
+
+  }
   else
+  {
+    #if TEJAS_DEBUG
+    printf("failing lookup for file: %s in dir sector: %d\n", name, inode_get_inumber (dir_get_inode (dir)));
+    #endif
     *inode = NULL;
+  }
 
   return *inode != NULL;
 }
@@ -327,6 +342,9 @@ recursive_dir_lookup (const char *name,
       /* Only look for directories, not files. */
       if (!(dir_lookup (dir, token, &inode)))
         {
+          #if TEJAS_DEBUG
+          printf("failing dir_lookup for file: %s in dir sector: %d\n", token, inode_get_inumber (dir_get_inode (dir)));
+          #endif
           dir_close (dir);
           return false;
         }
@@ -425,6 +443,9 @@ make_new_directory (const char *name)
   current_dir = dir_open (inode_open (sector));
   dir_add (current_dir, ".", sector, false);
   dir_add (current_dir, "..", inode_get_inumber (parent_dir->inode), false);
+  #if TEJAS_DEBUG 
+  printf ("directory %s created at sector: %d. parent dir sector: %d\n", dir_name, sector, inode_get_inumber (parent_dir->inode)); 
+  #endif
   dir_close (current_dir);
   /* Add directory entry to parent directory. */
   
@@ -605,5 +626,6 @@ bool get_is_file (const char *name)
       lookup (dir, token, &dir_entry, NULL);
       dir_close (dir);
     }
+  inode_close (inode);
   return dir_entry.is_file;
 }

@@ -9,6 +9,8 @@
 #include "threads/synch.h"
 #include "filesys/block-cache.h"
 
+#define TEJAS_DEBUG 0
+
 /* Partition that contains the file system. */
 struct block *fs_device;
 
@@ -85,8 +87,10 @@ filesys_create (const char *name, off_t initial_size)
                   && dir_add (dir, file_name, inode_sector, true));
   if (!success && inode_sector != 0) 
     free_map_release (inode_sector, 1);
+  #if TEJAS_DEBUG 
+  printf ("%s created at sector: %d. parent dir sector: %d\n", file_name, inode_sector, inode_get_inumber (dir_get_inode (dir))); 
+  #endif
   dir_close (dir);
-
   return success;
 }
 
@@ -110,6 +114,9 @@ filesys_open (const char *name)
 
   if (!(recursive_dir_lookup (name, &inode))) 
     {
+      #if TEJAS_DEBUG
+      printf("recursive_dir_lookup failed for file: %s\n", name);
+      #endif
       return NULL;
     }
 
@@ -133,12 +140,15 @@ int
 get_inumber (const char *file_name)
 {
   struct inode *inode = NULL;
+  int inode_number;
   if (!strcmp (file_name, "/"))
     {
       return ROOT_DIR_SECTOR;
     }
   ASSERT (recursive_dir_lookup (file_name, &inode));
-  return inode_get_inumber (inode);
+  inode_number = inode_get_inumber (inode);
+  inode_close (inode);
+  return inode_number;
 }
 
 /* Deletes the file named NAME.

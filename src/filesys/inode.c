@@ -10,6 +10,7 @@
 #include "threads/synch.h"
 #include <stdio.h>
 
+#define TEJAS_DEBUG 0
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
 /* Length of index array of an inode. */
@@ -418,10 +419,14 @@ inode_create (block_sector_t sector, off_t length)
           buffer_cache_write (fs_device, double_index[i], secondary_ptr[i]);
         }
     }
-
   success = true;
 
 exit:
+  for (i = 0; i < secondary_inode_cnt; i ++) 
+    {
+      free (secondary_ptr[i]);
+    }
+  free (secondary_ptr);
   free (disk_inode);
   free (single_index);
   free (double_index);
@@ -539,7 +544,12 @@ inode_open (block_sector_t sector)
   /* Allocate memory. */
   inode = malloc (sizeof *inode);
   if (inode == NULL)
+  {
+    #if TEJAS_DEBUG
+    printf("malloc failed\n");
+    #endif
     return NULL;
+  }
 
   /* Initialize. */
   list_push_front (&open_inodes, &inode->elem);
