@@ -119,6 +119,7 @@ filesys_create (const char *name, off_t initial_size)
   list_push_back (&cur_name_list, &name_entry->elem);
   lock_release (&cur_name_list_lock);
 
+  /* Create file. */
   bool success = (dir != NULL
                   && free_map_allocate (1, &inode_sector)
                   && inode_create (inode_sector, initial_size)
@@ -216,9 +217,35 @@ filesys_remove (const char *name)
       return false;
     }
 
+    /* Check for and prevent simultaneous accesses. */
+  struct list_elem *e;
+  block_sector_t parent_dir_sector = inode_get_inumber (dir_get_inode (dir));
+  lock_acquire (&cur_name_list_lock);
+  for (e = list_begin (&cur_name_list); 
+       e != list_end (&cur_name_list);
+       e = list_next (e))
+    {
+      struct cur_name_list_entry *cur_name_list_entry = NULL;
+      cur_name_list_entry = list_entry (e, struct cur_name_list_entry, elem);
+      if ((cur_name_list_entry->parent_dir_sector == parent_dir_sector) && (!strcmp (file_name, cur_name_list_entry->file_name)))
+        {
+          dir_close (dir);
+          return false;
+        }
+    }
+  struct cur_name_list_entry *name_entry = malloc (sizeof (struct cur_name_list_entry));
+  strlcpy (name_entry->file_name, file_name, strlen (file_name) + 1);
+  name_entry->parent_dir_sector = parent_dir_sector;
+  list_push_back (&cur_name_list, &name_entry->elem);
+  lock_release (&cur_name_list_lock);
+
+  /* Remove file. */
   bool success = dir != NULL && dir_remove (dir, file_name);
   dir_close (dir); 
-
+  lock_acquire (&cur_name_list_lock);
+  list_remove (&name_entry->elem);
+  lock_release (&cur_name_list_lock);
+  free (name_entry);
   return success;
 }
 
