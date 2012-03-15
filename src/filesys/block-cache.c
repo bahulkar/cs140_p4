@@ -243,7 +243,7 @@ block_cache_evict (struct lock * block_cache_lock)
 //!!$$
           if (bce->state == BCM_READING || bce->state == BCM_PINNED)
             {
-              printf ("|");
+              // printf ("|");
               //!! This breaks if cond_wait is below list_push_back
               cond_wait (&cond_read, block_cache_lock);              
               list_push_back (&block_cache_active_queue, list_elem);
@@ -481,7 +481,11 @@ buffer_cache_write_ofs (struct block *fs_device, block_sector_t sector_idx, int 
   
   bce->dirty = true;
   
-  block_cache_mark_active (bce, &block_cache_lock);  
+  validate_list_element (&bce->list_elem);
+  list_remove (&bce->list_elem);
+  bce->state = BCM_ACTIVE;
+  list_push_back (&block_cache_active_queue, &bce->list_elem);  
+  validate_list_element (&bce->list_elem);
 
   lock_release (&block_cache_lock);
   
