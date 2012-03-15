@@ -11,6 +11,17 @@
 
 /* Partition that contains the file system. */
 struct block *fs_device;
+struct hash name_table;
+
+struct lock cur_name_list_lock;
+struct list cur_name_list;
+
+struct cur_name_list_entry
+{
+  struct list_elem elem; /* Hash table element. */
+  char file_name [NAME_MAX + 1];     /* file/directory name. */
+  block_sector_t parent_dir_sector; /* inumber of parent dir. */
+};
 
 static void do_format (void);
 
@@ -31,6 +42,8 @@ filesys_init (bool format)
     do_format ();
 
   free_map_open ();
+  lock_init (&cur_name_list_lock);
+  list_init (&cur_name_list);
 }
 
 /* Shuts down the file system module, writing any unwritten data
@@ -41,7 +54,7 @@ filesys_done (void)
   block_cache_synchronize ();
   free_map_close ();
 }
-
+
 /* Creates a file named NAME with the given INITIAL_SIZE.
    Returns true if successful, false otherwise.
    Fails if a file named NAME already exists,
@@ -59,6 +72,10 @@ filesys_create (const char *name, off_t initial_size)
       return false;
     }
   struct dir *dir = recursive_dir_open (name);
+  if (!dir) 
+    {
+      return false;
+    }
   /* extract only file name and add its directory entry. */
   char name_copy[MAX_FULL_PATH];
   char *file_name = NULL;
@@ -79,6 +96,29 @@ filesys_create (const char *name, off_t initial_size)
       dir_close (dir);
       return false;
     }
+
+  /* Check for and prevent simultaneous accesses. */
+  struct list_elem *e;
+  block_sector_t parent_dir_sector = inode_get_inumber (dir_get_inode (dir));
+  lock_acquire (&cur_name_list_lock);
+  for (e = list_begin (&cur_name_list); 
+       e != list_end (&cur_name_list);
+       e = list_next (e))
+    {
+      struct cur_name_list_entry *cur_name_list_entry = NULL;
+      cur_name_list_entry = list_entry (e, struct cur_name_list_entry, elem);
+      if ((cur_name_list_entry->parent_dir_sector == parent_dir_sector) && (!strcmp (file_name, cur_name_list_entry->file_name)))
+        {
+          dir_close (dir);
+          return false;
+        }
+    }
+  struct cur_name_list_entry *name_entry = malloc (sizeof (struct cur_name_list_entry));
+  strlcpy (name_entry->file_name, file_name, strlen (file_name) + 1);
+  name_entry->parent_dir_sector = parent_dir_sector;
+  list_push_back (&cur_name_list, &name_entry->elem);
+  lock_release (&cur_name_list_lock);
+
   bool success = (dir != NULL
                   && free_map_allocate (1, &inode_sector)
                   && inode_create (inode_sector, initial_size)
@@ -86,6 +126,10 @@ filesys_create (const char *name, off_t initial_size)
   if (!success && inode_sector != 0) 
     free_map_release (inode_sector, 1);
   dir_close (dir);
+  lock_acquire (&cur_name_list_lock);
+  list_remove (&name_entry->elem);
+  lock_release (&cur_name_list_lock);
+  free (name_entry);
   return success;
 }
 
