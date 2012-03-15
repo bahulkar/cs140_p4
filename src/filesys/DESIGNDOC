@@ -37,15 +37,16 @@ Each sector entry needs 4 bytes of storage
 Each sector can store (512/4)=128 sector entries.
 Inode structure:
 1. 4 bytes to store file length
-2. 125 direct index entries -> can addresses 125 * 512 = 64000 bytes.
+2. 4 bytes to store magic number
+2. 124 direct index entries -> can addresses 124 * 512 = 63488 bytes.
 3. 1 direct index entry -> can addresses 128 * 512 = 65536 bytes.
 3. 1 doubly-indirect index entry -> can addresses 128 * (65536) = 8388608
    bytes.
 Total file size supported:
-  64000
+  63488
 + 65536
 + 8388608
-= 8518144 bytes > 8MB.
+= 8517632 bytes > 8MB.
 
 ---- SYNCHRONIZATION ----
 
@@ -79,11 +80,11 @@ entry and 1 double index entry.
 This design has the following advantages:
 1. It makes full use of the inode space.
 2. It allows for file growth without fragmentation.
-3. It allows accesses of files unto (125 * 512) bytes without any need
+3. It allows accesses of files unto (124 * 512) bytes without any need
 for extra indirection.
-4. It allows accesses of files upto ((125 * 512) + (128 * 512))bytes with 
+4. It allows accesses of files upto ((124 * 512) + (128 * 512))bytes with 
 only one extra level of indirection.
-5. It allows files to grow upto ((125 * 512) + (128 * 512) + (128 * (128
+5. It allows files to grow upto ((124 * 512) + (128 * 512) + (128 * (128
  * 512)))bytes.
 
 			    SUBDIRECTORIES
@@ -123,6 +124,15 @@ mechanism is the same as described above.
 >> only one of two simultaneous attempts to remove a single file
 >> should succeed, as should only one of two simultaneous attempts to
 >> create a file with the same name, and so on.
+There is synchronization during directory entry creation and removal.
+An directory entry can uniquely be identified by its name and the number
+of its parent directory. A list global to the filesystem (protected by a 
+lock) stores the file/directory name that is currently being added/removed
+and its parent's inumber. When a file/directory is to be added/removed, 
+it first checks in the list if another file of the same name in the same
+directory is being added/removed. If so, then it fails. Otherwise it
+adds itself to the list and the the actual creation/removal takes place.
+After that, it removes itself from the list.
 
 >> B5: Does your implementation allow a directory to be removed if it
 >> is open by a process or if it is in use as a process's current
