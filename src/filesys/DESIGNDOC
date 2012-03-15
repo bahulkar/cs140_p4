@@ -128,6 +128,9 @@ mechanism is the same as described above.
 >> is open by a process or if it is in use as a process's current
 >> working directory?  If so, what happens to that process's future
 >> file system operations?  If not, how do you prevent it?
+Our implementation does not allow the current working directory to be
+removed. A directory is allowed to be removed only if it empty (that is
+in our case, it has no entries other than '.' and '..').
 
 ---- RATIONALE ----
 
