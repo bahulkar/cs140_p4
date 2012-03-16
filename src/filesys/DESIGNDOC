@@ -52,6 +52,13 @@ Total file size supported:
 
 >> A3: Explain how your code avoids a race if two processes attempt to
 >> extend a file at the same time.
+There is a global list that has an entry per file created. Each entry
+has a condition variable associated with it. This condition variable 
+prevents simultaneous file growth on the same file. However, different
+files can grow at the same time. There is a lock to protect the list 
+access and the condition variable.
+The condition wait happens before the file growth starts, and the signal
+happens only after the data is written.
 
 >> A4: Suppose processes A and B both have file F open, both
 >> positioned at end-of-file.  If A reads and B writes F at the same
