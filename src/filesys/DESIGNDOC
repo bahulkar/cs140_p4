@@ -76,6 +76,9 @@ intermediate contents.
 >> prevent forever another process from writing the file, and many
 >> processes writing to a file cannot prevent another process forever
 >> from reading the file.
+Blocking is done only while growing a file. At all other times, multiple
+accesses are allowed. As file sizes are limited to approx. 8MB, there
+will be no forever waiting. This should ensure fairness. 
 
 ---- RATIONALE ----
 
