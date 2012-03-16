@@ -10,13 +10,13 @@
 /* Block cache element states */
 enum block_cache_mode
   {
-    BCM_READ = 1,                       /* Needs to be read from disk. Active queue. */
-    BCM_READING,                        /* Reading from disk. Active queue. */
-    BCM_WRITING,                        /* Writing to disk. No queue. */
-    BCM_EVICTED,                        /* Was evicted. On unused queue. */
-    BCM_PINNED,
-    BCM_UNUSED,                         /* Never been used. On unused queue. */
-    BCM_ACTIVE
+    BCM_READ = (1 << 0),                       /* Needs to be read from disk. Active queue. */
+    BCM_READING = (1 << 1),                        /* Reading from disk. Active queue. */
+    BCM_WRITING = (1 << 2),                        /* Writing to disk. No queue. */
+    BCM_EVICTED = (1 << 3),                        /* Was evicted. On unused queue. */
+    BCM_PINNED = (1 << 4),
+    BCM_UNUSED = (1 << 5),                         /* Never been used. On unused queue. */
+    BCM_ACTIVE = (1 << 6)
   };
 
 /* Block cache. Block must be exactly BLOCK_SECTOR_SIZE bytes long. */

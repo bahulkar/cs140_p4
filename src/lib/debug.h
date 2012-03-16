@@ -1,6 +1,9 @@
 #ifndef __LIB_DEBUG_H
 #define __LIB_DEBUG_H
 
+// #include <list.h>
+#include "lib/kernel/list.h"
+
 /* GCC lets us add "attributes" to functions, function
    parameters, etc. to indicate their properties.
    See the GCC manual for details. */
@@ -17,6 +20,8 @@ void debug_panic (const char *file, int line, const char *function,
                   const char *message, ...) PRINTF_FORMAT (4, 5) NO_RETURN;
 void debug_backtrace (void);
 void debug_backtrace_all (void);
+void debug_validate_list (struct list *list);
+void debug_print_list (struct list *list);
 
 #endif
 

@@ -24,13 +24,10 @@ struct block_cache_elem *block_cache_add_internal (block_sector_t sector, struct
 void block_cache_evict (struct lock * block_cache_lock);
 void validate_list_element (struct list_elem * le);
 void print_buffer_cache_block (struct block_cache_elem * bce);
-struct list_elem *advance_clock_hand (void);
 
 
 static thread_func periodic_write_thread; // (void);
 static thread_func read_ahead_thread; // (void);
-
-static struct list_elem * clock_hand_le;
 
 /* Block cache data storage. */
 static uint8_t block_cache[MAX_CACHE_SECTORS][BLOCK_SECTOR_SIZE];
@@ -113,6 +110,7 @@ read_ahead_thread (void *aux UNUSED)
              by another thread before overwriting with disk contents */
           ASSERT (bce->state == BCM_READING);
           bce->state = BCM_ACTIVE;
+              printf ("<ra>");
           list_push_back (&block_cache_active_queue, &bce->list_elem);
           validate_list_element (&bce->list_elem);
           
@@ -224,143 +222,121 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock)
   return bce;
 }
 
-/* Advances the clock hand, or return NULL if the next and current element are the same. */
-struct list_elem *
-advance_clock_hand ()
-{
-  struct list_elem * prev_le = NULL;
-  if (!clock_hand_le && !list_empty (&block_cache_active_queue))
-    clock_hand_le = list_begin (&block_cache_active_queue);
-    
-  if (clock_hand_le)
-    {
-      ASSERT (clock_hand_le);
-      ASSERT (!list_empty (&block_cache_active_queue));
-
-      /* Advance the clock hand */
-      if (clock_hand_le == list_back (&block_cache_active_queue))
-        clock_hand_le = list_begin (&block_cache_active_queue);
-      else
-        clock_hand_le = list_next (clock_hand_le);
-    
-      if (clock_hand_le == prev_le)
-        clock_hand_le = NULL;
-    }
-    
-  return clock_hand_le;
-}
-
-
 //!!
 /* Evicts a buffer cache element */
 void
 block_cache_evict (struct lock * block_cache_lock)
 {
+  struct list_elem * list_elem = NULL;
   struct block_cache_elem * bce = NULL;
-  struct list_elem * clock_hand_le = NULL;
-  
-  clock_hand_le = advance_clock_hand ();
-  
-  while (true)
-    { 
-      //!! cond_wait if we get back to the same place (NULL?)
-      printf ("@");
-      
-      if (!clock_hand_le)
-        {
-          printf ("-");
-          cond_wait (&cond_read, block_cache_lock);
-          clock_hand_le = advance_clock_hand ();
-          continue;
-        }
-
-      bce = list_entry (clock_hand_le, struct block_cache_elem, list_elem);
-      
-      if (bce->state == BCM_READING || bce->state == BCM_PINNED)
-        {
-          clock_hand_le = advance_clock_hand ();
-          continue;
-        }
-        
-      if (bce->accessed)
-        {
-          bce->accessed = false;
-          clock_hand_le = advance_clock_hand ();
-          continue;
-        }
-      
-      printf ("x");
-      
-      /* Advance the hand once more before editing the list */
-      clock_hand_le = advance_clock_hand ();
-      
-      ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);
-      
-      /* Evicts the buffer cache element */
-      list_remove (&bce->list_elem);
-      bce->state = BCM_WRITING;
-
-      /* Write the block back to disk */
-      if (bce->dirty)
-        {
-          lock_release (block_cache_lock);
-          block_write (fs_device, bce->sector, bce->block);
-          lock_acquire (block_cache_lock);
-        }
-
-      ASSERT (bce->state == BCM_WRITING);
-      //ASSERT (bce doesn't belong to any queue);
-
-      /* Once done evicting, place the block on the unused queue */
-      hash_delete (&block_cache_table, &bce->hash_elem);
-      bce->state = BCM_EVICTED;
-      list_push_back (&block_cache_unused_queue, &bce->list_elem);
-      validate_list_element (&bce->list_elem);
-      
-      cond_broadcast (&cond_write, block_cache_lock);
-      
-      break;
-    }
-    
-    
   
   /* Find a buffer cache element to evict */
   // FIFO Algorithm
   //!! busy waits!!
-//   while (!list_elem)
-//     {
-//       /* Pull from active queue, but still in hash so that other threads will block */
-//       list_elem = list_pop_front (&block_cache_active_queue);
-//       if (list_elem)
-//         {
-//           bce = list_entry (list_elem, struct block_cache_elem, list_elem);
-// //!!$$
-//           if (bce->state == BCM_READING || bce->state == BCM_PINNED)
-//             {
-//               // printf ("|");
-//               //!! This breaks if cond_wait is below list_push_back
-//               cond_wait (&cond_read, block_cache_lock);              
-//               list_push_back (&block_cache_active_queue, list_elem);
-//               list_elem = NULL;
-//               bce = NULL;
-//             }
-//           else
-//             {
-//               ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);   
-//             }
-//         }
-//       else 
-//         {
-//           // printf (":");
-//         }
-//       // printf (";");
-//       
-//       //!! Consider panicking if we get back to our start point
-//     }
-
-  /* Clock algorithm */
   
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
+
+  
+  ASSERT (!list_empty (&block_cache_active_queue));
+  printf ("a");
+  
+  while (!list_elem && !list_empty (&block_cache_active_queue))
+    {
+      
+      // bce = list_entry (e, struct block_cache_elem, list_elem);
+      // printf ("b(%X->%X)\n", bce->hash_elem, bce->hash_elem);
+      // printf ("b(%X->%X)\n", bce->hash_elem, bce->hash_elem);
+      // printf ("b(%X->%X)\n", bce, bce);  
+      
+      
+      /* Pull from active queue, but still in hash so that other threads will block */
+      list_elem = list_pop_front (&block_cache_active_queue);
+      if (list_elem)
+        {
+          bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+          
+
+          printf ("(%x->%x), ", (uint32_t)(&bce->list_elem), (uint32_t)((bce->list_elem).next));
+          
+          //!!$$
+          if (bce->state == BCM_READING || (bce->state & BCM_PINNED) == BCM_PINNED)
+            {
+              printf ("|");
+              //!! This breaks if cond_wait is below list_push_back
+              // cond_wait (&cond_read, block_cache_lock);              
+              list_push_back (&block_cache_active_queue, list_elem);
+              list_elem = NULL;
+              bce = NULL;
+            }
+          else
+            {
+              ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);   
+            }
+        }
+      else 
+        {
+          // printf (":");
+        }
+      // printf (";");
+      
+      //!! Consider panicking if we get back to our start point
+    }
     
+  // /* Evicts the buffer cache element */
+  // bce->state = BCM_WRITING;
+  // 
+  // /* Write the block back to disk */
+  // if (bce->dirty)
+  //   {
+  //     lock_release (block_cache_lock);
+  //     block_write (fs_device, bce->sector, bce->block);
+  //     lock_acquire (block_cache_lock);
+  //   }
+  // 
+  // ASSERT (bce->state == BCM_WRITING);
+  // //ASSERT (bce doesn't belong to any queue);
+  // 
+  // /* Once done evicting, place the block on the unused queue */
+  // hash_delete (&block_cache_table, &bce->hash_elem);
+  // bce->state = BCM_EVICTED;
+  // list_push_back (&block_cache_unused_queue, &bce->list_elem);
+  // validate_list_element (&bce->list_elem);
+  // cond_broadcast (&cond_write, block_cache_lock);
+  
+    printf ("; s=%d;", bce->state);
+  
+
+    ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);
+    
+    // /* Evicts the buffer cache element */
+    // list_remove (&bce->list_elem);
+
+    /* Write the block back to disk */
+    if (bce->dirty)
+      {
+        bce->state = BCM_WRITING;
+        lock_release (block_cache_lock);
+        block_write (fs_device, bce->sector, bce->block);
+        lock_acquire (block_cache_lock);
+        ASSERT (bce->state == BCM_WRITING);
+      }
+
+    /* Once done evicting, place the block on the unused queue */
+    hash_delete (&block_cache_table, &bce->hash_elem);
+    bce->state = BCM_EVICTED;
+    list_push_back (&block_cache_unused_queue, &bce->list_elem);
+    validate_list_element (&bce->list_elem);
+    debug_validate_list (&block_cache_active_queue);
+    debug_validate_list (&block_cache_unused_queue);
+    
+    
+    printf ("u(%x->%x)\n", (uint32_t)(&bce->list_elem), (uint32_t)((bce->list_elem).next));
+    
+    
+    cond_broadcast (&cond_write, block_cache_lock);
+  
+  
 }
 
 /* Either 1) adds a buffer cache element into the buffer cache for the
@@ -373,9 +349,17 @@ block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock,
   
   ASSERT (sector < 10000);
   
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
+  
+  
   while (!(bce = block_cache_find (sector, block_cache_lock))
          && list_empty (&block_cache_unused_queue))
     block_cache_evict (block_cache_lock);
+    
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
+    
   
   ASSERT (bce->state != BCM_READING || bce->state != BCM_WRITING);
   
@@ -409,7 +393,7 @@ block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock,
       else
         {
           // bce->state = BCM_READ;
-          bce->state = BCM_PINNED;
+          bce->state = BCM_PINNED | BCM_READ;
           list_push_back (&block_cache_active_queue, &bce->list_elem);
         }
     }
@@ -417,6 +401,9 @@ block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock,
   /* In case it was found on the read-ahead queue, go ahead and move it
      to the active queue */
   validate_list_element (&bce->list_elem);
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
+
 
   ASSERT (bce);
   ASSERT (bce->magic == BLOCK_CACHE_ELEM_MAGIC);
@@ -439,15 +426,44 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
   struct block_cache_elem * bce = NULL;
   struct block_cache_elem * bce_next = NULL;
   
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
+  
+  
   /* Prepares the buffer cache element for the requested sector */
   bce = block_cache_add_internal (sector, block_cache_lock, false);
   
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
+  
+  debug_print_list (&block_cache_active_queue);
+  debug_print_list (&block_cache_unused_queue);
+  
+  
+  bce->state |= BCM_PINNED;
+  printf ("bce_le=%#2x (%d), ", (uint32_t)(&bce->list_elem), bce->sector);
+  
   /* Starts reading the next sector on a background thread */
   bce_next = block_cache_add_internal (sector + 1, block_cache_lock, true);
-      
+  
+
+  // printf ("(%x->%x)", (uint32_t)(&bce->list_elem), (uint32_t)((bce->list_elem).next));
+  
+  printf ("bce_le=%#2x (%d)\n", (uint32_t)(&bce->list_elem), bce->sector);
+  
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
+  
+  if (bce->sector != sector) {
+    debug_print_list (&block_cache_active_queue);
+    debug_print_list (&block_cache_unused_queue);
+  }
+  //!! check sector size
+  ASSERT (bce->magic == BLOCK_CACHE_ELEM_MAGIC);
   ASSERT (bce->sector == sector);
-  if (bce->state == BCM_PINNED)
-    bce->state = BCM_READ;
+  
+  if ((bce->state & BCM_PINNED) == BCM_PINNED)
+    bce->state &= ~BCM_PINNED;
   
   return bce;
 }
@@ -459,8 +475,13 @@ block_cache_mark_active (struct block_cache_elem * bce, struct lock * block_cach
   validate_list_element (&bce->list_elem);
   list_remove (&bce->list_elem);
   bce->state = BCM_ACTIVE;
+  printf ("<ma>");
   list_push_back (&block_cache_active_queue, &bce->list_elem);  
   validate_list_element (&bce->list_elem);
+  
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
+
 }
 
 //!! update comment if asynch
@@ -545,12 +566,17 @@ buffer_cache_write_ofs (struct block *fs_device, block_sector_t sector_idx, int 
   memcpy (bce->block + sector_ofs, buffer, chunk_size);      
   
   bce->dirty = true;
-  
+
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
   validate_list_element (&bce->list_elem);
   list_remove (&bce->list_elem);
   bce->state = BCM_ACTIVE;
+  printf ("<wo>");
   list_push_back (&block_cache_active_queue, &bce->list_elem);  
   validate_list_element (&bce->list_elem);
+  debug_validate_list (&block_cache_active_queue);
+  debug_validate_list (&block_cache_unused_queue);
 
   lock_release (&block_cache_lock);
   
@@ -584,6 +610,9 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
      into caller's buffer. */
   if (bce->state == BCM_READ)
     {
+      debug_validate_list (&block_cache_active_queue);
+      debug_validate_list (&block_cache_unused_queue);
+      
       //!! want to take it off the current queue (but must check that it's on one)
       validate_list_element (&bce->list_elem);
       list_remove (&bce->list_elem);
@@ -598,9 +627,14 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
          by another thread before overwriting with disk contents */
       ASSERT (bce->state == BCM_READING);
       
+    printf ("<ro> <bce_le=%#2x (%d)> ", (uint32_t)(&bce->list_elem), bce->sector);
       bce->state = BCM_ACTIVE;
       list_push_back (&block_cache_active_queue, &bce->list_elem);  
-      validate_list_element (&bce->list_elem);        
+      validate_list_element (&bce->list_elem);   
+      
+      debug_validate_list (&block_cache_active_queue);
+      debug_validate_list (&block_cache_unused_queue);
+           
     }  
 
   memcpy (buffer, bce->block + sector_ofs, chunk_size);
