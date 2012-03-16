@@ -773,6 +773,35 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 
   ASSERT ((size + offset) < MAX_FILE_SIZE);
 
+  /* Dont read a file while it is growing. */
+  struct list_elem *e;
+  struct cur_inode_list_entry *cur_inode_list_entry = NULL;
+  block_sector_t inumber = inode_get_inumber (inode);
+  lock_acquire (&cur_inode_list_lock);
+  bool entry_present = false;
+  while (1) {
+      for (e = list_begin (&cur_inode_list); 
+           e != list_end (&cur_inode_list);
+           e = list_next (e))
+        {
+          cur_inode_list_entry = list_entry (e, struct cur_inode_list_entry, elem);
+          if (cur_inode_list_entry->inumber == inumber)
+            {
+              entry_present = true;
+              break;
+            }
+        }
+      if (entry_present && cur_inode_list_entry->currently_growing) 
+        {
+          cond_wait (&cur_inode_list_entry->cond, &cur_inode_list_lock);
+        }
+      else
+        {
+          break;
+        }
+  }
+  lock_release (&cur_inode_list_lock);
+
   while (size > 0) 
     {
       /* Disk sector to read, starting byte offset within sector. */
