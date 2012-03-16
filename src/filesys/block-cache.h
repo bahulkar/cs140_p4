@@ -10,13 +10,12 @@
 /* Block cache element states */
 enum block_cache_mode
   {
-    BCM_READ = (1 << 0),                       /* Needs to be read from disk. Active queue. */
-    BCM_READING = (1 << 1),                        /* Reading from disk. Active queue. */
-    BCM_WRITING = (1 << 2),                        /* Writing to disk. No queue. */
-    BCM_EVICTED = (1 << 3),                        /* Was evicted. On unused queue. */
-    BCM_PINNED = (1 << 4),
-    BCM_UNUSED = (1 << 5),                         /* Never been used. On unused queue. */
-    BCM_ACTIVE = (1 << 6)
+    BCM_UNUSED,               /* Never been used. On unused queue. */
+    BCM_EVICTED,              /* Was evicted. On unused queue. */
+    BCM_ACTIVE,               /* Active cache data.  Active queue */
+    BCM_READ,                 /* Needs to be read from disk. Active queue. */
+    BCM_READING,              /* Reading from disk. Active queue. */
+    BCM_WRITING,              /* Writing to disk. No queue. */
   };
 
 /* Block cache. Block must be exactly BLOCK_SECTOR_SIZE bytes long. */
@@ -24,7 +23,7 @@ struct block_cache_elem
   {
     struct hash_elem hash_elem;         /* Hash table element. */
     struct list_elem list_elem;         /* Element in block cache list. */
-    struct list_elem all_elem;          /* Element in block cache list. */
+    struct list_elem clock_elem;        /* Element for the clock algorithm. */
     block_sector_t sector;              /* Sector number of disk location. */
     uint8_t *block;                     /* Block data. */
     bool dirty;                         /* True if dirty. */

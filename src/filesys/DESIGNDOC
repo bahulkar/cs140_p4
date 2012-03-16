@@ -178,28 +178,108 @@ the current working directory.
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+block-cache.h
+-------------
+/* Block cache element states */
+enum block_cache_mode
+  {
+    BCM_UNUSED,               /* Never been used. On unused queue. */
+    BCM_EVICTED,              /* Was evicted. On unused queue. */
+    BCM_ACTIVE,               /* Active cache data.  Active queue */
+    BCM_READ,                 /* Needs to be read from disk. Active queue. */
+    BCM_READING,              /* Reading from disk. Active queue. */
+    BCM_WRITING,              /* Writing to disk. No queue. */
+  };
+
+/* Block cache. Block must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct block_cache_elem
+  {
+    struct hash_elem hash_elem;         /* Hash table element. */
+    struct list_elem list_elem;         /* Element in block cache list. */
+    struct list_elem clock_elem;        /* Element for the clock algorithm. */
+    block_sector_t sector;              /* Sector number of disk location. */
+    uint8_t *block;                     /* Block data. */
+    bool dirty;                         /* True if dirty. */
+    bool accessed;                      /* True after accesses. */
+    bool pinned;                        /* True when locking element for thread safety. */
+    enum block_cache_mode state;        /* Current state: Evicted, etc. */
+    unsigned magic;                     /* Magic number. */
+  };
+
+/* Lock to synchronize accesses to cache table. */
+struct lock block_cache_lock;
+
+block-cache.c
+-------------
+/* Array of all the block_cache_elem's */
+static struct block_cache_elem block_cache_elems[MAX_CACHE_SECTORS];
+
+/* Block cache buffer storage. */
+static uint8_t block_cache[MAX_CACHE_SECTORS][BLOCK_SECTOR_SIZE];
+
+/* List of cache blocks with no pending operations. */
+struct list block_cache_active_queue;
+
+/* List of empty blocks to be used for caching. */
+struct list block_cache_unused_queue;
+
+/* List of cache blocks waiting to be filled with data from disk. */
+struct list block_cache_read_queue;
+
+/* List of cache blocks used for the eviction algorithm. */
+struct list block_cache_clock_elem_queue;
+
+/* Block cache table. */
+struct hash block_cache_table;
+
+/* Condition when a read completes. */
+struct condition cond_read;
+
+/* Condition when a write completes. */
+struct condition cond_write;
+
+/* Condition when an element is ready for read-ahead. */
+struct condition cond_read_queue_add;
+
+/* Clock algorithm hand for eviction*/
+static struct list_elem * clock_hand_le;
+
+
 ---- ALGORITHMS ----
 
 >> C2: Describe how your cache replacement algorithm chooses a cache
 >> block to evict.
+We are using a modified clock algorithm.  The buffer cache elements are stored in the block_cache_clock_elem_queue.  The queue is clock hand traverses the queue to find the next cache element to evict.  The criteria for eviction is:
+1) Not accessed (which is set every time the block is hit by a read, read-ahead, or write)
+2) Not pinned (aka, not actively reading, writing, or evicting data to disk)
+3) Skip over once if dirty
+****4) Skip over once if inode_disk data (file structure data)
+
 
 >> C3: Describe your implementation of write-behind.
+If a buffer cache element exists, all writes will be written directly to the cached buffer in memory.  Upon eviction, the cached block data will be written to disk and the block & buffer cache element will then be made available for the next block data to be cached.
 
 >> C4: Describe your implementation of read-ahead.
+Whenever a sector is read (which has a one to one mapping to blocks in Pintos) the sector/block is looked up in the buffer cache. If it doesn't exist, a new buffer cache element will be provided (upon evicting a stale cache element, if needed). Subsequently, the next sector is also looked up, and a cache element is also provided if not found. The read-ahead cache elements are queued on the block_cache_read_queue. The read-ahead thread will then load the blocks for the queued cache elements from disk on a low-priority background thread.
 
 ---- SYNCHRONIZATION ----
 
 >> C5: When one process is actively reading or writing data in a
 >> buffer cache block, how are other processes prevented from evicting
 >> that block?
+Whenever disk I/O is initiated, the buffer cache element is first pinned and then the lock is released.  Other processes check the pinned flag before manipulating the data inside of the buffer cache element.  If they need access to the element, then the other process waits for a cond_read or cond_write depending on the type of I/O (one single cond_io would have worked, but two conditions are used as a slight optimization).  For clarity, the state of the buffer cache element is also set to BCM_READING or BCM_WRITING during disk I/O.
+
 
 >> C6: During the eviction of a block from the cache, how are other
 >> processes prevented from attempting to access the block?
+Same as for all disk I/O.  There is a lock that is hierarchically passed to all inner-level buffer_cache_x functions.  The lock is held at all times in the buffer_cache_x functions except for during disk I/O.  To protect the element when the lock is released, the buffer cache element is pinned before the lock is released, and unpinned when the lock is restored.
 
 ---- RATIONALE ----
 
 >> C7: Describe a file workload likely to benefit from buffer caching,
 >> and workloads likely to benefit from read-ahead and write-behind.
+Buffer caches will benefit any file workload that works repeatedly with the same blocks.  For instance when navigating a directory structure, the directory inodes are frequently reaccessed.  Read-ahead will benefit reading sequential blocks in one larger file (it will work best when the blocks are stored sequentially on disk).  Examples would include reading large spreadsheets, text files, images, movies, etc.  Write-behind will benefit workloads that involve frequently editing the contents of the same block on disk.  Examples include a user that frequently saves a document being edited, files that store system/application settings, etc.
+
 
 			   SURVEY QUESTIONS
 			   ================
