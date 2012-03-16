@@ -14,7 +14,7 @@
 #define BLOCK_CACHE_ELEM_MAGIC 0x32323232
 
 /* Maximum number of sectors allowed in block cache. */
-#define MAX_CACHE_SECTORS 64
+#define MAX_CACHE_SECTORS 5
 
 /* Timer interval for periodic dirty cache block writes. */
 #define PERIODIC_WRITE_TIME_IN_SECONDS 2
@@ -49,7 +49,7 @@ struct list block_cache_unused_queue;
 struct list block_cache_read_queue;
 
 /* List of cache blocks waiting to be written on periodic basis. */
-struct list block_cache_timer_queue;
+struct list block_cache_all_elem_queue;
 
 /* List of cache blocks waiting to be written and evicted. */
 struct list block_cache_eviction_queue;
@@ -132,7 +132,7 @@ block_cache_init (void)
   list_init (&block_cache_active_queue);
   list_init (&block_cache_unused_queue);
   list_init (&block_cache_read_queue);
-  list_init (&block_cache_timer_queue);
+  list_init (&block_cache_all_elem_queue);
   list_init (&block_cache_eviction_queue);
   hash_init (&block_cache_table, block_cache_hash, block_cache_less, NULL);
   lock_init (&block_cache_lock);
@@ -153,6 +153,7 @@ block_cache_init (void)
       bce->state = BCM_UNUSED;
       bce->magic = BLOCK_CACHE_ELEM_MAGIC;
       list_push_back (&block_cache_unused_queue, &bce->list_elem);
+      list_push_back (&block_cache_all_elem_queue, &bce->all_elem);
     }
     
   /* Start file read-ahead thread & background cache saving thread. */
@@ -224,20 +225,21 @@ advance_clock_hand ()
 {
   struct list_elem * prev_le = NULL;
   
-  if (!clock_hand_le && !list_empty (&block_cache_active_queue))
-    clock_hand_le = list_begin (&block_cache_active_queue);
+  if (!clock_hand_le && !list_empty (&block_cache_all_elem_queue))
+    clock_hand_le = list_begin (&block_cache_all_elem_queue);
     
   prev_le = clock_hand_le;
   // printf("(%2x->%2x),", (uint32_t)clock_hand_le,  (uint32_t)(clock_hand_le->next));
+  // printf ("(%#2x)", (uint32_t)clock_hand_le);
   
   if (clock_hand_le)
     {
       ASSERT (clock_hand_le);
-      ASSERT (!list_empty (&block_cache_active_queue));
+      ASSERT (!list_empty (&block_cache_all_elem_queue));
 
       /* Advance the clock hand */
-      if (clock_hand_le == list_back (&block_cache_active_queue))
-        clock_hand_le = list_begin (&block_cache_active_queue);
+      if (clock_hand_le == list_back (&block_cache_all_elem_queue))
+        clock_hand_le = list_begin (&block_cache_all_elem_queue);
       else
         clock_hand_le = list_next (clock_hand_le);
     
@@ -259,7 +261,8 @@ block_cache_evict (struct lock * block_cache_lock)
   struct block_cache_elem * bce = NULL;
   struct list_elem * e = NULL;
   
- // printf("(%2x->%2x),", (uint32_t)clock_hand_le,  (uint32_t)((*clock_hand_le).next));
+        // printf("(%2x->%2x),", (uint32_t)clock_hand_le,  (uint32_t)((*clock_hand_le).next));
+
   // printf ("(%#2x)", (uint32_t)clock_hand_le);
   //!! add eviction lock to prevent multiple threads from trying to evict (on cond_wait)
   //!! if global == null, assign e advance_ch
@@ -269,14 +272,20 @@ block_cache_evict (struct lock * block_cache_lock)
     //   printf ("tick\n");
     // }
     // else printf ("tock\n");
-  
+      // printf ("(%#2x)", (uint32_t)clock_hand_le);
+
   while (true)
     { 
       //!! cond_wait if we get back to the same place (NULL?)
       // printf ("@");
+      // printf ("(%#2x)", (uint32_t)clock_hand_le);
+      // 
+      // debug_validate_list (&block_cache_all_elem_queue);
+      // debug_print_list (&block_cache_all_elem_queue);
       
       if (!e)
         {
+          ASSERT (e);
           //!!!!!! This will break.  Allows another thread to move clock handle
           // printf ("w");
           cond_wait (&cond_read, block_cache_lock);
@@ -285,9 +294,9 @@ block_cache_evict (struct lock * block_cache_lock)
         }
       else
         {
-          bce = list_entry (e, struct block_cache_elem, list_elem);
+          bce = list_entry (e, struct block_cache_elem, all_elem);
       
-          if (bce->state == BCM_READING || (bce->state & BCM_PINNED) == BCM_PINNED)
+          if (bce->state == BCM_READING || (bce->state & BCM_PINNED) == BCM_PINNED || bce->state == BCM_WRITING || bce->state == BCM_EVICTED || bce->state == BCM_UNUSED)
             {
               // printf ("p");
               e = advance_clock_hand ();
@@ -334,7 +343,7 @@ block_cache_evict (struct lock * block_cache_lock)
         hash_delete (&block_cache_table, &bce->hash_elem);
         bce->state = BCM_EVICTED;
         list_push_back (&block_cache_unused_queue, &bce->list_elem);
-        validate_list_element (&bce->list_elem);
+        validate_list_element (&bce->all_elem);
       
         debug_validate_list (&block_cache_active_queue);
         debug_validate_list (&block_cache_unused_queue);
@@ -486,22 +495,6 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
   return bce;
 }
 
-/* Moves a block cache element as active */
-void
-block_cache_mark_active (struct block_cache_elem * bce, struct lock * block_cache_lock UNUSED)
-{
-  validate_list_element (&bce->list_elem);
-  list_remove (&bce->list_elem);
-  bce->state = BCM_ACTIVE;
-  // printf ("<ma>");
-  list_push_back (&block_cache_active_queue, &bce->list_elem);  
-  validate_list_element (&bce->list_elem);
-  
-  debug_validate_list (&block_cache_active_queue);
-  debug_validate_list (&block_cache_unused_queue);
-
-}
-
 //!! update comment if asynch
 /* Saves the buffer cache to disk synchronously */
 //!! will block all threads.  consider a less disruptive approach using the periodic_queue
@@ -538,9 +531,9 @@ block_cache_synchronize ()
               /* Write the block back to disk */
               bce->state = BCM_WRITING;
               // bce->state |= BCM_PINNED;
-              lock_release (&block_cache_lock);
+              // lock_release (&block_cache_lock);
               block_write (fs_device, bce->sector, bce->block);
-              lock_acquire (&block_cache_lock);
+              // lock_acquire (&block_cache_lock);
               ASSERT (bce->state == BCM_WRITING);
               // bce->state &= ~BCM_PINNED;
               bce->state = BCM_ACTIVE;

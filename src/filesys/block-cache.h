@@ -24,6 +24,7 @@ struct block_cache_elem
   {
     struct hash_elem hash_elem;         /* Hash table element. */
     struct list_elem list_elem;         /* Element in block cache list. */
+    struct list_elem all_elem;          /* Element in block cache list. */
     block_sector_t sector;              /* Sector number of disk location. */
     uint8_t *block;                     /* Block data. */
     bool dirty;                         /* True if dirty. */
