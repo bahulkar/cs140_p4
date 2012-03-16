@@ -335,11 +335,13 @@ block_cache_evict (struct lock * block_cache_lock)
         /* Write the block back to disk */
         if (bce->dirty)
           {
+            bce->pinned = true;
             bce->state = BCM_WRITING;
             lock_release (block_cache_lock);
             block_write (fs_device, bce->sector, bce->block);
             lock_acquire (block_cache_lock);
             ASSERT (bce->state == BCM_WRITING);
+            bce->pinned = false;
           }
         
         
@@ -553,12 +555,12 @@ block_cache_synchronize ()
               
               /* Write the block back to disk */
               bce->state = BCM_WRITING;
-              // bce->state |= BCM_PINNED;
-              // lock_release (&block_cache_lock);
+              bce->pinned = true;
+              lock_release (&block_cache_lock);
               block_write (fs_device, bce->sector, bce->block);
-              // lock_acquire (&block_cache_lock);
+              lock_acquire (&block_cache_lock);
               ASSERT (bce->state == BCM_WRITING);
-              // bce->state &= ~BCM_PINNED;
+              bce->pinned = false;
               bce->state = BCM_ACTIVE;
             
               debug_validate_list (&block_cache_active_queue);
