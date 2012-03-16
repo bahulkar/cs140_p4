@@ -113,6 +113,12 @@ check_sector (struct block *block, block_sector_t sector)
     }
 }
 
+/* Returns true if SECTOR is a valid offset within BLOCK.  Otherwise false */
+bool valid_sector (struct block * block, block_sector_t sector)
+{
+  return (sector >= block->size || sector < 0) ? false : true;
+}
+
 /* Reads sector SECTOR from BLOCK into BUFFER, which must
    have room for BLOCK_SECTOR_SIZE bytes.
    Internally synchronizes accesses to block devices, so external
