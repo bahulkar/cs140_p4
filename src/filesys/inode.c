@@ -12,19 +12,30 @@
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
-/* Length of index array of an inode. */
+
+/* Length of primary index array of an inode. */
 #define INDEX_ARRAY_LENGTH (124)
+
 /* Maximum sector entries that can fit in an single index inode. */
-#define MAX_SECTOR_ENTRIES_PER_INODE (BLOCK_SECTOR_SIZE / sizeof (block_sector_t))
+#define MAX_SECTOR_ENTRIES_PER_INODE (BLOCK_SECTOR_SIZE /              \
+                                      sizeof (block_sector_t))
+
 /* Number of bytes addressable by a second level inode. */
-#define SECONDARY_INODE_BYTES (MAX_SECTOR_ENTRIES_PER_INODE * BLOCK_SECTOR_SIZE)
+#define SECONDARY_INODE_BYTES (MAX_SECTOR_ENTRIES_PER_INODE            \
+                               * BLOCK_SECTOR_SIZE)
+
 /* Beyond this length Single Index needs to be used. */
 #define SINGLE_INDEX_THRESHOLD ((INDEX_ARRAY_LENGTH * BLOCK_SECTOR_SIZE))
+
 /* Beyond this length Double Index needs to be used. */
-#define DOUBLE_INDEX_THRESHOLD (SINGLE_INDEX_THRESHOLD + (MAX_SECTOR_ENTRIES_PER_INODE * BLOCK_SECTOR_SIZE))
+#define DOUBLE_INDEX_THRESHOLD (SINGLE_INDEX_THRESHOLD +               \
+                      (MAX_SECTOR_ENTRIES_PER_INODE * BLOCK_SECTOR_SIZE))
+
 /* Max addressability of 2nd level index. */
-#define L2_CAPACITY (MAX_SECTOR_ENTRIES_PER_INODE * (MAX_SECTOR_ENTRIES_PER_INODE * BLOCK_SECTOR_SIZE))
-/* Max file size supported by this file system. Actual space on disk may be less. */
+#define L2_CAPACITY (MAX_SECTOR_ENTRIES_PER_INODE *                    \
+                    (MAX_SECTOR_ENTRIES_PER_INODE * BLOCK_SECTOR_SIZE))
+
+/* Max file size supported by this file system. */
 #define MAX_FILE_SIZE (L2_CAPACITY + DOUBLE_INDEX_THRESHOLD)
 
 /* On-disk inode.
@@ -38,16 +49,40 @@ struct inode_disk
     block_sector_t double_index;          /* Double index. */
   };
 
+/* Lock to protect current inode list. */
 struct lock cur_inode_list_lock;
+/* List of current inodes - used for synchronization. */
 struct list cur_inode_list;
-
+/* List element of current inode list. */
 struct cur_inode_list_entry
 {
-  struct list_elem elem;      /* Hash table element. */
+  struct list_elem elem;      /* List element. */
   block_sector_t inumber;     /* inumber for the inode. */
   struct condition cond;      /* cond var for synchronization. */
   bool currently_growing;     /* file growth in progress. */
 };
+
+/* Helper function prototypes. */
+static bool grow_file (struct inode *inode,
+                       off_t size,
+                       off_t offset,
+                       struct cur_inode_list_entry **cur_entry);
+
+static bool grow_l0 (struct inode *inode,
+                     block_sector_t start_sector,
+                     uint32_t num_sectors);
+
+static bool grow_l1 (struct inode *inode,
+                     block_sector_t start_sector,
+                     uint32_t num_sectors);
+
+static bool grow_l2 (struct inode *inode,
+                     block_sector_t start_sector,
+                     uint32_t num_sectors);
+
+static uint32_t calculate_spanned_inodes (struct inode *inode,
+                                          block_sector_t start_sector,
+                                          uint32_t num_sectors);
 
 /* Returns the number of sectors to allocate for an inode SIZE
    bytes long. */
@@ -81,30 +116,40 @@ byte_to_sector (const struct inode *inode, off_t pos)
   if (pos < inode->data.length)
       if (pos < SINGLE_INDEX_THRESHOLD) 
         {
+          /* Position needs only direct reference. */
           return inode->data.index[pos / BLOCK_SECTOR_SIZE];
         }
       else
         {
+          /* Position needs first level of indexing. */
           if (pos < DOUBLE_INDEX_THRESHOLD) 
             {
               block_sector_t first_level_offset;
-              first_level_offset = (pos - SINGLE_INDEX_THRESHOLD) / BLOCK_SECTOR_SIZE;
-              buffer_cache_read (fs_device, inode->data.single_index, &single_index);
+              first_level_offset = (pos - SINGLE_INDEX_THRESHOLD) / 
+                                    BLOCK_SECTOR_SIZE;
+              buffer_cache_read (fs_device,
+                                 inode->data.single_index,
+                                 &single_index);
               return single_index[first_level_offset];
             }
           else
             {
+              /* Position needs second level of indexing*/
               block_sector_t offset = pos - DOUBLE_INDEX_THRESHOLD;
               block_sector_t first_level_offset;
               block_sector_t second_level_offset;
               first_level_offset = offset / (SECONDARY_INODE_BYTES);
-              buffer_cache_read (fs_device, inode->data.double_index, &single_index);
-              buffer_cache_read (fs_device, single_index[first_level_offset], &double_index);
-              second_level_offset = (offset % (SECONDARY_INODE_BYTES)) / BLOCK_SECTOR_SIZE;
+              buffer_cache_read (fs_device,
+                                 inode->data.double_index,
+                                 &single_index);
+              buffer_cache_read (fs_device,
+                                 single_index[first_level_offset],
+                                 &double_index);
+              second_level_offset = (offset % (SECONDARY_INODE_BYTES)) / 
+                                    BLOCK_SECTOR_SIZE;
               return double_index[second_level_offset];
             }
         }
-      
   else
     return -1;
 }
@@ -122,7 +167,151 @@ inode_init (void)
   list_init (&open_inodes);
 }
 
-bool grow_l0 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+/* Grows a file based on requested size and offset.*/
+static bool
+grow_file (struct inode *inode,
+           off_t size,
+           off_t offset,
+           struct cur_inode_list_entry **cur_entry)
+{
+  bool success = false;
+  uint32_t total_extra_sectors = 0;
+  off_t current_length = inode_length (inode);
+  off_t final_length = offset + size;
+  off_t extra_length = final_length - current_length;
+  uint32_t extra_l0_sectors = 0;
+  uint32_t extra_l1_sectors = 0;
+  uint32_t extra_l2_sectors = 0;
+  uint32_t extra_l2_inodes = 0;
+  uint32_t start_l1_sector = 0;
+  uint32_t start_l2_sector = 0;
+  uint32_t current_total_sectors = DIV_ROUND_UP (current_length,
+                                                 BLOCK_SECTOR_SIZE);
+  uint32_t final_total_sectors = DIV_ROUND_UP (final_length,
+                                               BLOCK_SECTOR_SIZE);
+
+  /* Check for and prevent simultaneous growth. */
+  struct list_elem *e;
+  struct cur_inode_list_entry *cur_inode_list_entry = NULL;
+  block_sector_t inumber = inode_get_inumber (inode);
+  lock_acquire (&cur_inode_list_lock);
+  bool entry_present = false;
+  while (1) {
+      for (e = list_begin (&cur_inode_list); 
+           e != list_end (&cur_inode_list);
+           e = list_next (e))
+        {
+          cur_inode_list_entry = list_entry (e, struct cur_inode_list_entry, elem);
+          if (cur_inode_list_entry->inumber == inumber)
+            {
+              entry_present = true;
+              break;
+            }
+        }
+      if (entry_present && cur_inode_list_entry->currently_growing) 
+        {
+          cond_wait (&cur_inode_list_entry->cond, &cur_inode_list_lock);
+        }
+      else if (entry_present) 
+        {
+          *cur_entry = cur_inode_list_entry;
+          break;
+        }
+      else
+        {
+          struct cur_inode_list_entry *inode_entry = NULL;
+          inode_entry = malloc (sizeof (struct cur_inode_list_entry));
+          if (inode_entry == NULL)
+            {
+              lock_release (&cur_inode_list_lock);
+              return false;
+            }
+          inode_entry->inumber = inumber;
+          cond_init (&inode_entry->cond);
+          inode_entry->currently_growing = true;
+          list_push_back (&cur_inode_list, &inode_entry->elem);
+          *cur_entry = inode_entry;
+          break;
+        }
+  }
+  lock_release (&cur_inode_list_lock);
+
+  /* Calculate number of sectors needed in each zone*/
+  if (current_length < SINGLE_INDEX_THRESHOLD) 
+    {
+      start_l1_sector = (SINGLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+      start_l2_sector = (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+      if (final_length > SINGLE_INDEX_THRESHOLD ) 
+        {
+          extra_l0_sectors = INDEX_ARRAY_LENGTH - current_total_sectors;
+          if (final_length > DOUBLE_INDEX_THRESHOLD) 
+            {
+              extra_l1_sectors = MAX_SECTOR_ENTRIES_PER_INODE;
+              extra_l2_sectors = final_total_sectors -
+                                 (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+            }
+          else
+            {
+              extra_l1_sectors = final_total_sectors - INDEX_ARRAY_LENGTH;
+            }
+        }
+      else
+        {
+          extra_l0_sectors = final_total_sectors - current_total_sectors;
+        }
+    }
+  else if (current_length < DOUBLE_INDEX_THRESHOLD) 
+    {
+      start_l1_sector = current_total_sectors;
+      start_l2_sector = (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+      if (final_length > DOUBLE_INDEX_THRESHOLD) 
+        {
+          extra_l1_sectors = (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE) -
+                              current_total_sectors;
+          extra_l2_sectors = final_total_sectors -
+                             (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+        }
+      else
+        {
+          extra_l1_sectors = final_total_sectors - current_total_sectors;
+        }
+    }
+  else
+    {
+      start_l2_sector = current_total_sectors;
+      extra_l2_sectors = final_total_sectors - current_total_sectors;
+    }
+
+  if (extra_l0_sectors) 
+    {
+      success = grow_l0 (inode, current_total_sectors, extra_l0_sectors);
+      if (!success)
+        return success;
+    }
+  if (extra_l1_sectors) 
+    {
+      success = grow_l1 (inode, start_l1_sector, extra_l1_sectors);
+      if (!success)
+        return success;
+    }
+  if (extra_l2_sectors) 
+    {
+      success = grow_l2 (inode, start_l2_sector, extra_l2_sectors);
+      if (!success)
+        return success;
+    }
+
+  /* Write back the inode to disk. */
+  inode->data.length = final_length;
+  buffer_cache_write (fs_device, inode->sector, &(inode->data));
+  return success;
+}
+
+/* Grow file in the directly indexed region. */
+static bool
+grow_l0 (struct inode *inode,
+         block_sector_t start_sector,
+         uint32_t num_sectors)
 {
   bool success = false;
   uint32_t i;
@@ -133,7 +322,9 @@ bool grow_l0 (struct inode *inode, block_sector_t start_sector, uint32_t num_sec
     {
       if (free_map_allocate (1, &(inode->data.index[i + start_sector])))
         {
-          buffer_cache_write (fs_device, inode->data.index[i + start_sector], zeros);
+          buffer_cache_write (fs_device,
+                              inode->data.index[i + start_sector],
+                              zeros);
         }
       else
         goto exit;
@@ -143,13 +334,18 @@ exit:
   return success;
 }
 
-bool grow_l1 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+/* Grow file in the singly indexed region. */
+static bool
+grow_l1 (struct inode *inode,
+         block_sector_t start_sector,
+         uint32_t num_sectors)
 {
   bool success = false;
   block_sector_t *single_index = NULL;
   uint32_t i;
   static char zeros[BLOCK_SECTOR_SIZE];
-  block_sector_t l1_base = start_sector - (SINGLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
+  block_sector_t l1_base = start_sector -
+                           (SINGLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
 
   single_index = calloc (1, BLOCK_SECTOR_SIZE);
   if (single_index == NULL) 
@@ -185,7 +381,7 @@ exit:
   return success;
 }
 
-uint32_t calculate_spanned_inodes (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
+static uint32_t calculate_spanned_inodes (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
 {
   uint32_t count = 1;
   block_sector_t next_inode_boundary = (DIV_ROUND_UP((start_sector - DOUBLE_INDEX_THRESHOLD), MAX_SECTOR_ENTRIES_PER_INODE)) * MAX_SECTOR_ENTRIES_PER_INODE;
@@ -196,6 +392,7 @@ uint32_t calculate_spanned_inodes (struct inode *inode, block_sector_t start_sec
   return count;
 }
 
+/* Grow file in the doubly indexed region. */
 bool grow_l2 (struct inode *inode, block_sector_t start_sector, uint32_t num_sectors)
 {
   bool success = false;
@@ -445,137 +642,6 @@ exit:
   free (single_index);
   free (double_index);
 
-  return success;
-}
-
-/* Grows a file based on requested size and offset.*/
-static bool
-grow_file (struct inode *inode, off_t size, off_t offset, struct cur_inode_list_entry **cur_entry)
-{
-  bool success = false;
-  uint32_t total_extra_sectors = 0;
-  off_t current_length = inode_length (inode);
-  off_t final_length = offset + size;
-  off_t extra_length = final_length - current_length;
-  uint32_t extra_l0_sectors = 0;
-  uint32_t extra_l1_sectors = 0;
-  uint32_t extra_l2_sectors = 0;
-  uint32_t extra_l2_inodes = 0;
-  uint32_t start_l1_sector = 0;
-  uint32_t start_l2_sector = 0;
-  uint32_t current_total_sectors = DIV_ROUND_UP (current_length, BLOCK_SECTOR_SIZE);
-  uint32_t final_total_sectors = DIV_ROUND_UP (final_length, BLOCK_SECTOR_SIZE);
-
-  /* Check for and prevent simultaneous growth. */
-  struct list_elem *e;
-  struct cur_inode_list_entry *cur_inode_list_entry = NULL;
-  block_sector_t inumber = inode_get_inumber (inode);
-  lock_acquire (&cur_inode_list_lock);
-  bool entry_present = false;
-  while (1) {
-      for (e = list_begin (&cur_inode_list); 
-           e != list_end (&cur_inode_list);
-           e = list_next (e))
-        {
-          cur_inode_list_entry = list_entry (e, struct cur_inode_list_entry, elem);
-          if (cur_inode_list_entry->inumber == inumber)
-            {
-              entry_present = true;
-              break;
-            }
-        }
-      if (entry_present && cur_inode_list_entry->currently_growing) 
-        {
-          cond_wait (&cur_inode_list_entry->cond, &cur_inode_list_lock);
-        }
-      else if (entry_present) 
-        {
-          *cur_entry = cur_inode_list_entry;
-          break;
-        }
-      else
-        {
-          struct cur_inode_list_entry *inode_entry = malloc (sizeof (struct cur_inode_list_entry));
-          if (inode_entry == NULL)
-            {
-              lock_release (&cur_inode_list_lock);
-              return false;
-            }
-          inode_entry->inumber = inumber;
-          cond_init (&inode_entry->cond);
-          inode_entry->currently_growing = true;
-          list_push_back (&cur_inode_list, &inode_entry->elem);
-          *cur_entry = inode_entry;
-          break;
-        }
-  }
-  lock_release (&cur_inode_list_lock);
-
-  /* Calculate number of sectors needed in each zone*/
-  if (current_length < SINGLE_INDEX_THRESHOLD) 
-    {
-      start_l1_sector = (SINGLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
-      start_l2_sector = (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
-      if (final_length > SINGLE_INDEX_THRESHOLD ) 
-        {
-          extra_l0_sectors = INDEX_ARRAY_LENGTH - current_total_sectors;
-          if (final_length > DOUBLE_INDEX_THRESHOLD) 
-            {
-              extra_l1_sectors = MAX_SECTOR_ENTRIES_PER_INODE;
-              extra_l2_sectors = final_total_sectors - (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
-            }
-          else
-            {
-              extra_l1_sectors = final_total_sectors - INDEX_ARRAY_LENGTH;
-            }
-        }
-      else
-        {
-          extra_l0_sectors = final_total_sectors - current_total_sectors;
-        }
-    }
-  else if (current_length < DOUBLE_INDEX_THRESHOLD) 
-    {
-      start_l1_sector = current_total_sectors;
-      start_l2_sector = (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
-      if (final_length > DOUBLE_INDEX_THRESHOLD) 
-        {
-          extra_l1_sectors = (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE) - current_total_sectors;
-          extra_l2_sectors = final_total_sectors - (DOUBLE_INDEX_THRESHOLD / BLOCK_SECTOR_SIZE);
-        }
-      else
-        {
-          extra_l1_sectors = final_total_sectors - current_total_sectors;
-        }
-    }
-  else
-    {
-      start_l2_sector = current_total_sectors;
-      extra_l2_sectors = final_total_sectors - current_total_sectors;
-    }
-
-  if (extra_l0_sectors) 
-    {
-      success = grow_l0 (inode, current_total_sectors, extra_l0_sectors);
-      if (!success)
-        return success;
-    }
-  if (extra_l1_sectors) 
-    {
-      success = grow_l1 (inode, start_l1_sector, extra_l1_sectors);
-      if (!success)
-        return success;
-    }
-  if (extra_l2_sectors) 
-    {
-      success = grow_l2 (inode, start_l2_sector, extra_l2_sectors);
-      if (!success)
-        return success;
-    }
-
-  /* Write back the inode to disk. */
-  inode->data.length = final_length;
-  buffer_cache_write (fs_device, inode->sector, &(inode->data));
   return success;
 }
 
