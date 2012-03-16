@@ -143,7 +143,6 @@ struct thread
     int fd_counter;                     /* Next available file
                                            descriptor. */
 #endif
-    char pwd[MAX_FULL_PATH];            /* Current working directory. */
     block_sector_t pwd_sector;          /* Sector where pwd is stored. */
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */

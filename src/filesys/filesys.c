@@ -114,6 +114,12 @@ filesys_create (const char *name, off_t initial_size)
         }
     }
   struct cur_name_list_entry *name_entry = malloc (sizeof (struct cur_name_list_entry));
+  if (name_entry == NULL)
+    {
+      dir_close (dir);
+      lock_release (&cur_name_list_lock);
+      return false;
+    }
   strlcpy (name_entry->file_name, file_name, strlen (file_name) + 1);
   name_entry->parent_dir_sector = parent_dir_sector;
   list_push_back (&cur_name_list, &name_entry->elem);
@@ -234,6 +240,12 @@ filesys_remove (const char *name)
         }
     }
   struct cur_name_list_entry *name_entry = malloc (sizeof (struct cur_name_list_entry));
+  if (name_entry == NULL)
+    {
+      dir_close (dir);
+      lock_release (&cur_name_list_lock);
+      return false;
+    }
   strlcpy (name_entry->file_name, file_name, strlen (file_name) + 1);
   name_entry->parent_dir_sector = parent_dir_sector;
   list_push_back (&cur_name_list, &name_entry->elem);

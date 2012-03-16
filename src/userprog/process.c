@@ -68,18 +68,22 @@ signal_parent_load_status (struct thread *t, void *aux)
   if (t->tid == cur->parent_tid)
     {
       t->child_loaded = load_status;
-	  if (load_status) 
-	    {
-		  struct child_list_elem *child_elem;
-		  child_elem = (struct child_list_elem *) malloc(
-		      sizeof(struct child_list_elem));
-		  sema_init (&child_elem->sema_child, 0);
-		  child_elem->tid = cur->tid;
-		  child_elem->clean_exit = false;
-		  child_elem->wait_already_called = false;
-		  lock_acquire (&t->child_list_lock);
-		  list_push_back (&t->child_list, &child_elem->elem);
-		  lock_release (&t->child_list_lock);
+      if (load_status) 
+        {
+          struct child_list_elem *child_elem;
+          child_elem = (struct child_list_elem *) malloc(
+              sizeof(struct child_list_elem));
+          if (child_elem == NULL)
+            {
+              PANIC ("Kernel failed to allocate memory.");
+            }
+          sema_init (&child_elem->sema_child, 0);
+          child_elem->tid = cur->tid;
+          child_elem->clean_exit = false;
+          child_elem->wait_already_called = false;
+          lock_acquire (&t->child_list_lock);
+          list_push_back (&t->child_list, &child_elem->elem);
+          lock_release (&t->child_list_lock);
         }
       sema_up (&t->exec_sema);
     }
@@ -414,6 +418,11 @@ load (const char **argv, int argc, void (**eip) (void), void **esp)
   thread_current ()->fd_counter++;
   struct fd_list_elem *fd_elem;
   fd_elem = (struct fd_list_elem *) malloc (sizeof (struct fd_list_elem));
+  if (fd_elem == NULL)
+    {
+      lock_release (&file_lock);
+      return false;
+    }
   fd_elem->fd = thread_current ()->fd_counter;
   fd_elem->file_name = file_name;
   fd_elem->deleted = false;

@@ -496,6 +496,11 @@ grow_file (struct inode *inode, off_t size, off_t offset, struct cur_inode_list_
       else
         {
           struct cur_inode_list_entry *inode_entry = malloc (sizeof (struct cur_inode_list_entry));
+          if (inode_entry == NULL)
+            {
+              lock_release (&cur_inode_list_lock);
+              return false;
+            }
           inode_entry->inumber = inumber;
           cond_init (&inode_entry->cond);
           inode_entry->currently_growing = true;

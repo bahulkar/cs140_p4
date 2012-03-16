@@ -90,6 +90,10 @@ pull_arguments (void *sp, int num_args)
     }
 
   void **args = malloc (sizeof (void *) * (num_args + 1));
+  if (args == NULL) 
+    {
+      return NULL;
+    }
   int i;
   for (i = 1; i <= num_args; i++)
     {
@@ -197,6 +201,10 @@ syscall_handler (struct intr_frame *f)
   if (lookup_table[syscall_num]) 
     {
       args = pull_arguments (sp, lookup_table[syscall_num]);
+    }
+  if (args == NULL) 
+    {
+      return -1;
     }
 
   /* Transfer control to correct system call. */
@@ -503,6 +511,11 @@ sys_open (const char *file_name)
 
       struct fd_list_elem *fd_elem;
       fd_elem = (struct fd_list_elem *) malloc (sizeof (struct fd_list_elem));
+      if (malloc == NULL) 
+        {
+          lock_release (&file_lock);
+          return -1;
+        }
       fd_elem->fd = thread_current ()->fd_counter;
       fd_elem->file_name = file_name;
       fd_elem->deleted = false;
