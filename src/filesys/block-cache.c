@@ -104,6 +104,7 @@ read_ahead_thread (void *aux UNUSED)
 
           ASSERT (bce->state == BCM_READ);
           bce->state = BCM_READING;
+          bce->pinned = true;
           
           lock_release (&block_cache_lock);
           block_read (fs_device, bce->sector, bce->block);
@@ -111,8 +112,9 @@ read_ahead_thread (void *aux UNUSED)
 
           /* Check that the block hasn't been read and/or written
              by another thread before overwriting with disk contents */
-          ASSERT (bce->state == BCM_READING);
+          ASSERT (bce->state == BCM_READING && bce->pinned);
           bce->state = BCM_ACTIVE;
+          bce->pinned = false;
               // printf ("<ra>");
           list_push_back (&block_cache_active_queue, &bce->list_elem);
           validate_list_element (&bce->list_elem);
@@ -204,6 +206,9 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock)
       }
       //!! not sure if should block on reading if it's read-ahead 
       else if (bce && bce->state == BCM_READING ) {
+        cond_wait (&cond_read, block_cache_lock);
+      }
+      else if (bce && bce->pinned) {
         cond_wait (&cond_read, block_cache_lock);
       }
       else {
@@ -378,12 +383,12 @@ block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock,
   debug_validate_list (&block_cache_unused_queue);
     
   
-  ASSERT (bce->state != BCM_READING || bce->state != BCM_WRITING);
+  // ASSERT (!bce->pinned && bce->state != BCM_READING && bce->state != BCM_WRITING);
   
   /* Make sure that the block is not in the cache (from before or another thread)*/
   if (bce)
     {
-      if (!read_ahead && bce->state == BCM_READ)
+      if (!read_ahead && bce->state == BCM_READ && !bce->pinned)
         {
           /* Bump items from read_ahead_queue if we are trying to read it now */
           validate_list_element (&bce->list_elem);
@@ -398,6 +403,7 @@ block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock,
       bce = list_entry (list_elem, struct block_cache_elem, list_elem);
       bce->dirty = false;
       bce->sector = sector;
+      bce->pinned = false;
       hash_insert (&block_cache_table, &bce->hash_elem);
       
       if (read_ahead)
@@ -410,9 +416,9 @@ block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock,
         }
       else
         {
-          // bce->state = BCM_READ;
           bce->state = BCM_READ;
-          bce->pinned = true;
+          // bce->state = BCM_PINNED;
+          // bce->pinned = true;
           list_push_back (&block_cache_active_queue, &bce->list_elem);
         }
     }
@@ -466,8 +472,15 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
 //!! seems to duplicate the code in internal
   //!! could it already be pinned before we get here???
   // ASSERT (!bce->pinned);
+  
+  bool did_pin = false;
   // if (bce->state)
-    bce->pinned = true;
+    // bce->pinned = true;
+  if (!bce->pinned)
+    {
+      did_pin = true;
+      bce->pinned = true;
+    }
     
   // printf ("bce_le=%#2x (%d), ", (uint32_t)(&bce->list_elem), bce->sector);
   
@@ -494,8 +507,11 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
   ASSERT (bce->sector == sector);
       
   // if (bce->state == BCM_READ && bce->pinned)
-  if (bce->pinned)
+  if (did_pin)
+    {
       bce->pinned = false;
+      // bce->state = BCM_READ;
+    }
     
   bce->accessed = true;
   
@@ -647,6 +663,7 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
       list_remove (&bce->list_elem);
       
       bce->state = BCM_READING;
+      bce->pinned = true;
       
       lock_release (&block_cache_lock);
       block_read (fs_device, bce->sector, bce->block);
@@ -654,10 +671,11 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
 
       /* Check that the block hasn't been read and/or written
          by another thread before overwriting with disk contents */
-      ASSERT (bce->state == BCM_READING);
+      ASSERT (bce->state == BCM_READING && bce->pinned);
       
     // printf ("<ro> <bce_le=%#2x (%d)> ", (uint32_t)(&bce->list_elem), bce->sector);
       bce->state = BCM_ACTIVE;
+      bce->pinned = false;
       list_push_back (&block_cache_active_queue, &bce->list_elem);  
       validate_list_element (&bce->list_elem);   
       
