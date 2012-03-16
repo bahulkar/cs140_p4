@@ -11,11 +11,11 @@
 
 /* Partition that contains the file system. */
 struct block *fs_device;
-struct hash name_table;
 
-struct lock cur_name_list_lock;
-struct list cur_name_list;
+struct lock cur_name_list_lock; /* Lock to protect list of file names. */
+struct list cur_name_list; /* List of file names being created/removed. */
 
+/* List entry for ist of file names. */
 struct cur_name_list_entry
 {
   struct list_elem elem; /* Hash table element. */
@@ -62,24 +62,28 @@ filesys_done (void)
 bool
 filesys_create (const char *name, off_t initial_size) 
 {
+  char name_copy[MAX_FULL_PATH];
+  char *file_name = NULL;
+  char *token, *save_ptr;
+  block_sector_t inode_sector = 0;
+
+  /* Null file name not allowed. */
   if (name[0] == '\0') 
     {
       return false;
     }
-  block_sector_t inode_sector = 0;
   if (strlen (name) > MAX_FULL_PATH) 
     {
       return false;
     }
+
+  /* Open parent directory. */
   struct dir *dir = recursive_dir_open (name);
   if (!dir) 
     {
       return false;
     }
-  /* extract only file name and add its directory entry. */
-  char name_copy[MAX_FULL_PATH];
-  char *file_name = NULL;
-  char *token, *save_ptr;
+  /* extract only file name from entire path. */
   strlcpy (name_copy, name, strlen (name) + 1);
   for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
        token = strtok_r (NULL, "/", &save_ptr))
@@ -125,7 +129,7 @@ filesys_create (const char *name, off_t initial_size)
   list_push_back (&cur_name_list, &name_entry->elem);
   lock_release (&cur_name_list_lock);
 
-  /* Create file. */
+  /* Create file. and add directory entry. */
   bool success = (dir != NULL
                   && free_map_allocate (1, &inode_sector)
                   && inode_create (inode_sector, initial_size)
@@ -133,6 +137,7 @@ filesys_create (const char *name, off_t initial_size)
   if (!success && inode_sector != 0) 
     free_map_release (inode_sector, 1);
   dir_close (dir);
+
   lock_acquire (&cur_name_list_lock);
   list_remove (&name_entry->elem);
   lock_release (&cur_name_list_lock);
@@ -148,21 +153,27 @@ filesys_create (const char *name, off_t initial_size)
 struct file *
 filesys_open (const char *name)
 {
+  struct inode *inode = NULL;
+
+  /* Null file name not allowed. */
   if (name[0] == '\0') 
     {
       return NULL;
     }
+
+  /* Root directory is special case. */
   if (!strcmp (name, "/"))
     {
       return (struct file *) dir_open (inode_open (ROOT_DIR_SECTOR));
     }
-  struct inode *inode = NULL;
 
+  /* Lookup file name and get its inode. */
   if (!(recursive_dir_lookup (name, &inode))) 
     {
       return NULL;
     }
 
+  /* Check if it is file or directory and open accordingly. */
   if (get_is_file (name)) 
     {
       return file_open (inode);
@@ -173,21 +184,27 @@ filesys_open (const char *name)
     }
 }
 
+/* Returns if file is a file or directory. */
 bool
 is_file (const char *file_name)
 {
   return get_is_file (file_name);
 }
 
+/* Returns inumber for file. */
 int
 get_inumber (const char *file_name)
 {
   struct inode *inode = NULL;
   int inode_number;
+
+  /* Root directory is special case. */
   if (!strcmp (file_name, "/"))
     {
       return ROOT_DIR_SECTOR;
     }
+  
+  /* Look up file and get its inode. */
   ASSERT (recursive_dir_lookup (file_name, &inode));
   inode_number = inode_get_inumber (inode);
   inode_close (inode);
@@ -201,16 +218,21 @@ get_inumber (const char *file_name)
 bool
 filesys_remove (const char *name) 
 {
+  char name_copy[MAX_FULL_PATH];
+  char *file_name = NULL;
+  char *token = NULL, *save_ptr = NULL;
+  struct dir *dir = NULL;
+
+  /* Null name not allowed. */
   if (name[0] == '\0')
     {
       return false;
     }
-  //struct dir *dir = dir_open_root ();
-  struct dir *dir = recursive_dir_open (name);
-  /* extract only file name and remove its directory entry. */
-  char name_copy[MAX_FULL_PATH];
-  char *file_name = NULL;
-  char *token = NULL, *save_ptr = NULL;
+
+  /* Open parent directory. */
+  dir = recursive_dir_open (name);
+
+  /* extract only file name from full path. */
   strlcpy (name_copy, name, strlen (name) + 1);
   for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
        token = strtok_r (NULL, "/", &save_ptr))
@@ -223,7 +245,7 @@ filesys_remove (const char *name)
       return false;
     }
 
-    /* Check for and prevent simultaneous accesses. */
+  /* Check for and prevent simultaneous accesses. */
   struct list_elem *e;
   block_sector_t parent_dir_sector = inode_get_inumber (dir_get_inode (dir));
   lock_acquire (&cur_name_list_lock);
@@ -251,7 +273,7 @@ filesys_remove (const char *name)
   list_push_back (&cur_name_list, &name_entry->elem);
   lock_release (&cur_name_list_lock);
 
-  /* Remove file. */
+  /* Remove dirctory entry of file. */
   bool success = dir != NULL && dir_remove (dir, file_name);
   dir_close (dir); 
   lock_acquire (&cur_name_list_lock);
