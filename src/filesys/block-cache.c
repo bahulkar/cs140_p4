@@ -17,7 +17,7 @@
 #define MAX_CACHE_SECTORS 64
 
 /* Timer interval for periodic dirty cache block writes. */
-#define PERIODIC_WRITE_TIME_IN_SECONDS 30
+#define PERIODIC_WRITE_TIME_IN_SECONDS 2
 
 unsigned block_cache_hash (const struct hash_elem *b_, void *aux);
 bool block_cache_less (const struct hash_elem *a_, const struct hash_elem *b_, void *aux);
@@ -75,7 +75,6 @@ periodic_write_thread (void *aux UNUSED)
   while (1)
     {
       timer_msleep (PERIODIC_WRITE_TIME_IN_SECONDS * 1000);
-      printf ("*** synchronize\n");
       block_cache_synchronize ();
     }
 }
