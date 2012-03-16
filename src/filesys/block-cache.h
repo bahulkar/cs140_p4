@@ -29,6 +29,7 @@ struct block_cache_elem
     uint8_t *block;                     /* Block data. */
     bool dirty;                         /* True if dirty. */
     bool accessed;                      /* True after accesses. */
+    bool pinned;                        /* True when locking element for thread safety. */
     enum block_cache_mode state;        /* Current state: Evicted, etc. */
     unsigned magic;                     /* Magic number. */
   };

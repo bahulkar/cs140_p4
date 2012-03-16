@@ -296,7 +296,7 @@ block_cache_evict (struct lock * block_cache_lock)
         {
           bce = list_entry (e, struct block_cache_elem, all_elem);
       
-          if (bce->state == BCM_READING || (bce->state & BCM_PINNED) == BCM_PINNED || bce->state == BCM_WRITING || bce->state == BCM_EVICTED || bce->state == BCM_UNUSED)
+          if (bce->pinned || bce->state == BCM_READING || bce->state == BCM_WRITING || bce->state == BCM_EVICTED || bce->state == BCM_UNUSED)
             {
               // printf ("p");
               e = advance_clock_hand ();
@@ -411,7 +411,8 @@ block_cache_add_internal (block_sector_t sector, struct lock * block_cache_lock,
       else
         {
           // bce->state = BCM_READ;
-          bce->state = BCM_PINNED | BCM_READ;
+          bce->state = BCM_READ;
+          bce->pinned = true;
           list_push_back (&block_cache_active_queue, &bce->list_elem);
         }
     }
@@ -461,8 +462,13 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
   // debug_print_list (&block_cache_read_queue);
   // printf ("size: active=%d, unused=%d, read_ahead=%d; ", list_size (&block_cache_active_queue), list_size (&block_cache_unused_queue), list_size (&block_cache_read_queue));
   // ASSERT (list_size (&block_cache_active_queue) + list_size (&block_cache_unused_queue) + list_size (&block_cache_read_queue) == MAX_CACHE_SECTORS)  
-  
-  bce->state |= BCM_PINNED;
+
+//!! seems to duplicate the code in internal
+  //!! could it already be pinned before we get here???
+  // ASSERT (!bce->pinned);
+  // if (bce->state)
+    bce->pinned = true;
+    
   // printf ("bce_le=%#2x (%d), ", (uint32_t)(&bce->list_elem), bce->sector);
   
   /* Starts reading the next sector on a background thread */
@@ -486,9 +492,10 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
   //!! check sector size
   ASSERT (bce->magic == BLOCK_CACHE_ELEM_MAGIC);
   ASSERT (bce->sector == sector);
-  
-  if ((bce->state & BCM_PINNED) == BCM_PINNED)
-    bce->state &= ~BCM_PINNED;
+      
+  // if (bce->state == BCM_READ && bce->pinned)
+  if (bce->pinned)
+      bce->pinned = false;
     
   bce->accessed = true;
   
@@ -525,7 +532,7 @@ block_cache_synchronize ()
              Otherwise, save the cached block if dirty */
           if (bce->state != BCM_ACTIVE)
             break;
-          else if (bce->dirty && (bce->state & BCM_PINNED) != BCM_PINNED)
+          else if (bce->dirty && !bce->pinned)
             {
               
               /* Write the block back to disk */
