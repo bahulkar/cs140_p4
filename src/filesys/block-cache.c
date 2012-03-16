@@ -532,15 +532,23 @@ block_cache_synchronize ()
              Otherwise, save the cached block if dirty */
           if (bce->state != BCM_ACTIVE)
             break;
-          else if (bce->dirty)
+          else if (bce->dirty && (bce->state & BCM_PINNED) != BCM_PINNED)
             {
-              //!! a local buffer will make extra safe
-              //!! async causes one test to fail.  check later
-              // lock_release (&block_cache_lock);
+              
+              /* Write the block back to disk */
+              bce->state = BCM_WRITING;
+              // bce->state |= BCM_PINNED;
+              lock_release (&block_cache_lock);
               block_write (fs_device, bce->sector, bce->block);
-              // cond_broadcast (&cond_write, &block_cache_lock);
-              // lock_acquire (&block_cache_lock);
-              // printf ("*");
+              lock_acquire (&block_cache_lock);
+              ASSERT (bce->state == BCM_WRITING);
+              // bce->state &= ~BCM_PINNED;
+              bce->state = BCM_ACTIVE;
+            
+              debug_validate_list (&block_cache_active_queue);
+              debug_validate_list (&block_cache_unused_queue);
+              debug_validate_list (&block_cache_read_queue);              
+              validate_list_element (&bce->list_elem);
             }
         }
         
