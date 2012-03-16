@@ -66,6 +66,9 @@ happens only after the data is written.
 >> may not read data other than what B writes, e.g. if B writes
 >> nonzero data, A is not allowed to see all zeros.  Explain how your
 >> code avoids this race.
+A file read is blocked till file growth is complete if a file is growing.
+This will allow the reader to see either the old or the new, but no
+intermediate contents.
 
 >> A5: Explain how your synchronization design provides "fairness".
 >> File access is "fair" if readers cannot indefinitely block writers
