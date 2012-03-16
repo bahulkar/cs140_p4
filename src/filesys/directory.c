@@ -24,9 +24,6 @@ struct dir_entry
     bool is_file;                       /* Is file or directory */
   };
 
-/* Cache the root director pointer. */
-struct dir * root_dir_ptr = NULL;
-
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
 bool
@@ -89,6 +86,7 @@ dir_get_inode (struct dir *dir)
   return dir->inode;
 }
 
+/* Checks if DIR is empty. */
 static bool
 is_directory_empty (const struct dir *dir)
 {
@@ -99,6 +97,7 @@ is_directory_empty (const struct dir *dir)
   for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
        ofs += sizeof e) 
     {
+      /* . and .. are allowed to be there. */
       if (e.in_use && (strcmp (".", e.name) && strcmp ("..", e.name)))
         {
           return false;
@@ -287,6 +286,7 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
   return false;
 }
 
+/* Looks up a file given its complete path (relative/absolute). */
 bool
 recursive_dir_lookup (const char *name,
             struct inode **return_inode) 
@@ -315,7 +315,7 @@ recursive_dir_lookup (const char *name,
   {
       inode = inode_open (thread_current ()->pwd_sector);
   }
-  /* Check for dir name validity and get parent dir details. */
+  /* Traverse through the path and fail if any part not present. */
   strlcpy (name_copy, name, strlen (name) + 1);
   for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
        token = strtok_r (NULL, "/", &save_ptr))
@@ -328,7 +328,6 @@ recursive_dir_lookup (const char *name,
           dir_close (dir);
           return false;
         }
-      /* Only look for directories, not files. */
       if (!(dir_lookup (dir, token, &inode)))
         {
           dir_close (dir);
@@ -340,7 +339,7 @@ recursive_dir_lookup (const char *name,
   return true;
 }
 
-/* Makes a new directory. */
+/* Makes a new directory. Path may be absolute/relative. */
 bool
 make_new_directory (const char *name)
 {
@@ -356,6 +355,7 @@ make_new_directory (const char *name)
   name_copy[0] = '\0';
   struct dir_entry e;
 
+  /* Null name not allowed. */
   if (name[0] == '\0')
     {
       return false;
@@ -376,7 +376,7 @@ make_new_directory (const char *name)
       inode = inode_open (thread_current ()->pwd_sector);
   }
   parent_inode = inode;
-  /* Check for dir name validity and get parent dir details. */
+  /* Traverse through the given path */
   strlcpy (name_copy, name, strlen (name) + 1);
   for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
        token = strtok_r (NULL, "/", &save_ptr))
@@ -396,7 +396,6 @@ make_new_directory (const char *name)
       if (!(dir_lookup (dir, token, &inode)))
         {
           final_dir = true;
-          //dir_close (dir);
           continue;
         }
       /* Check that looked up entry is a directory (and not a file). */
@@ -417,6 +416,7 @@ make_new_directory (const char *name)
       return false;
     }
 
+  /* Allocate sector for new directory. */
   if (!(free_map_allocate (1, &sector)))
     {
       return false;
@@ -430,8 +430,8 @@ make_new_directory (const char *name)
   dir_add (current_dir, ".", sector, false);
   dir_add (current_dir, "..", inode_get_inumber (parent_dir->inode), false);
   dir_close (current_dir);
+
   /* Add directory entry to parent directory. */
-  
   if (!dir_add (parent_dir, dir_name, sector, false))
     {
       dir_close (parent_dir);
@@ -469,7 +469,7 @@ change_dir (const char *name)
   {
       inode = inode_open (thread_current ()->pwd_sector);
   }
-  /* Check for dir name validity and get parent dir details. */
+  /* Traverse path and fail if any intermediate part is absent. */
   strlcpy (name_copy, name, strlen (name) + 1);
   for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
        token = strtok_r (NULL, "/", &save_ptr))
@@ -477,7 +477,6 @@ change_dir (const char *name)
       dir_name = token;
       dir = dir_open (inode);
       parent_dir = dir;
-      /* Only look for directories, not files. */
       if (!(dir_lookup (dir, token, &inode)))
         {
           dir_close (dir);
@@ -487,11 +486,14 @@ change_dir (const char *name)
       dir_close (dir);
     }
   inode_close (inode);
+
+  /* Assign inumber of directory as new current working directory. */
   thread_current ()->pwd_sector = sector;
-  //printf("current dir now is at: %s, sector: %d\n", name, sector);
   return true;
 }
 
+/* Returns the parent directory for a given file/directory. */
+/* File creation and file/directory removal use this. */
 struct dir *
 recursive_dir_open (const char *name)
 {
@@ -526,7 +528,7 @@ recursive_dir_open (const char *name)
       parent_inode_sector = thread_current ()->pwd_sector;
   }
   parent_inode = inode;
-  /* Check for dir name validity and get parent dir details. */
+  /* Traverse through the path */
   strlcpy (name_copy, name, strlen (name) + 1);
   for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
        token = strtok_r (NULL, "/", &save_ptr))
@@ -542,6 +544,8 @@ recursive_dir_open (const char *name)
       /* Only look for directories, not files. */
       if (!(dir_lookup (dir, token, &inode)))
         {
+          /* Only last component of name is allowed to be asbent as
+             it will be the new file created. */
           inode = NULL;
           final_dir = true;
           dir_close (dir);
@@ -564,6 +568,7 @@ recursive_dir_open (const char *name)
   return dir_open (inode_open (parent_inode_sector));
 }
 
+/* Returns whether name is a file or a directory. */
 bool get_is_file (const char *name)
 {
   char name_copy[MAX_FULL_PATH];
@@ -576,6 +581,7 @@ bool get_is_file (const char *name)
   name_copy[0] = '\0';
   struct dir_entry dir_entry;
 
+  /* Root directory is special case. */
   if (!strcmp (name, "/"))
     {
       return false;
@@ -596,7 +602,7 @@ bool get_is_file (const char *name)
   {
       inode = inode_open (thread_current ()->pwd_sector);
   }
-  /* Check for dir name validity and get parent dir details. */
+  /* Traverse through the path. */
   strlcpy (name_copy, name, strlen (name) + 1);
   for (token = strtok_r (name_copy, "/", &save_ptr); token != NULL;
        token = strtok_r (NULL, "/", &save_ptr))
@@ -604,7 +610,6 @@ bool get_is_file (const char *name)
       dir_name = token;
       dir = dir_open (inode);
       parent_dir = dir;
-      /* Only look for directories, not files. */
       if (!(dir_lookup (dir, token, &inode)))
         {
           ASSERT (0);

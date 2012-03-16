@@ -37,20 +37,28 @@ Each sector entry needs 4 bytes of storage
 Each sector can store (512/4)=128 sector entries.
 Inode structure:
 1. 4 bytes to store file length
-2. 125 direct index entries -> can addresses 125 * 512 = 64000 bytes.
+2. 4 bytes to store magic number
+2. 124 direct index entries -> can addresses 124 * 512 = 63488 bytes.
 3. 1 direct index entry -> can addresses 128 * 512 = 65536 bytes.
 3. 1 doubly-indirect index entry -> can addresses 128 * (65536) = 8388608
    bytes.
 Total file size supported:
-  64000
+  63488
 + 65536
 + 8388608
-= 8518144 bytes > 8MB.
+= 8517632 bytes > 8MB.
 
 ---- SYNCHRONIZATION ----
 
 >> A3: Explain how your code avoids a race if two processes attempt to
 >> extend a file at the same time.
+There is a global list that has an entry per file created. Each entry
+has a condition variable associated with it. This condition variable 
+prevents simultaneous file growth on the same file. However, different
+files can grow at the same time. There is a lock to protect the list 
+access and the condition variable.
+The condition wait happens before the file growth starts, and the signal
+happens only after the data is written.
 
 >> A4: Suppose processes A and B both have file F open, both
 >> positioned at end-of-file.  If A reads and B writes F at the same
@@ -58,6 +66,9 @@ Total file size supported:
 >> may not read data other than what B writes, e.g. if B writes
 >> nonzero data, A is not allowed to see all zeros.  Explain how your
 >> code avoids this race.
+A file read is blocked till file growth is complete if a file is growing.
+This will allow the reader to see either the old or the new, but no
+intermediate contents.
 
 >> A5: Explain how your synchronization design provides "fairness".
 >> File access is "fair" if readers cannot indefinitely block writers
@@ -65,6 +76,9 @@ Total file size supported:
 >> prevent forever another process from writing the file, and many
 >> processes writing to a file cannot prevent another process forever
 >> from reading the file.
+Blocking is done only while growing a file. At all other times, multiple
+accesses are allowed. As file sizes are limited to approx. 8MB, there
+will be no forever waiting. This should ensure fairness. 
 
 ---- RATIONALE ----
 
@@ -79,11 +93,11 @@ entry and 1 double index entry.
 This design has the following advantages:
 1. It makes full use of the inode space.
 2. It allows for file growth without fragmentation.
-3. It allows accesses of files unto (125 * 512) bytes without any need
+3. It allows accesses of files unto (124 * 512) bytes without any need
 for extra indirection.
-4. It allows accesses of files upto ((125 * 512) + (128 * 512))bytes with 
+4. It allows accesses of files upto ((124 * 512) + (128 * 512))bytes with 
 only one extra level of indirection.
-5. It allows files to grow upto ((125 * 512) + (128 * 512) + (128 * (128
+5. It allows files to grow upto ((124 * 512) + (128 * 512) + (128 * (128
  * 512)))bytes.
 
 			    SUBDIRECTORIES
@@ -123,11 +137,23 @@ mechanism is the same as described above.
 >> only one of two simultaneous attempts to remove a single file
 >> should succeed, as should only one of two simultaneous attempts to
 >> create a file with the same name, and so on.
+There is synchronization during directory entry creation and removal.
+An directory entry can uniquely be identified by its name and the number
+of its parent directory. A list global to the filesystem (protected by a 
+lock) stores the file/directory name that is currently being added/removed
+and its parent's inumber. When a file/directory is to be added/removed, 
+it first checks in the list if another file of the same name in the same
+directory is being added/removed. If so, then it fails. Otherwise it
+adds itself to the list and the the actual creation/removal takes place.
+After that, it removes itself from the list.
 
 >> B5: Does your implementation allow a directory to be removed if it
 >> is open by a process or if it is in use as a process's current
 >> working directory?  If so, what happens to that process's future
 >> file system operations?  If not, how do you prevent it?
+Our implementation does not allow the current working directory to be
+removed. A directory is allowed to be removed only if it empty (that is
+in our case, it has no entries other than '.' and '..').
 
 ---- RATIONALE ----
 
