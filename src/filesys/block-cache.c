@@ -13,7 +13,7 @@
 #define BLOCK_CACHE_ELEM_MAGIC 0x32323232
 
 /* Maximum number of sectors allowed in block cache. */
-#define MAX_CACHE_SECTORS 64
+#define MAX_CACHE_SECTORS 256
 
 /* Timer interval for periodic dirty cache block writes. */
 #define PERIODIC_WRITE_TIME_IN_SECONDS 2
@@ -146,7 +146,6 @@ block_cache_init (void)
       bce->state = BCM_UNUSED;
       bce->magic = BLOCK_CACHE_ELEM_MAGIC;
       list_push_back (&block_cache_unused_queue, &bce->list_elem);
-      // list_push_back (&block_cache_clock_elem_queue, &bce->clock_elem);
     }
     
   /* Start file read-ahead thread & background cache saving thread. */
@@ -315,6 +314,9 @@ block_cache_evict (struct lock * block_cache_lock)
           printf ("bce->state = %#2x\n", bce->state); 
         ASSERT (bce->state == BCM_ACTIVE || bce->state == BCM_READ);
       
+      
+        inode_clear_data (bce->sector);
+        
         /* Evicts the buffer cache element */
         list_remove (&bce->list_elem);
         list_remove (&bce->clock_elem);
@@ -331,6 +333,7 @@ block_cache_evict (struct lock * block_cache_lock)
             bce->pinned = false;
           }
         
+          printf ("@");
         
   
         /* Once done evicting, place the block on the unused queue */
@@ -469,6 +472,8 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
     bce->pinned = false;
     
   bce->accessed = true;
+  inode_update_data (bce->sector, bce->block);
+  
   
   return bce;
 }
@@ -579,7 +584,9 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
            
     }  
 
-  memcpy (buffer, bce->block + sector_ofs, chunk_size);
+  if (buffer)
+    memcpy (buffer, bce->block + sector_ofs, chunk_size);
+    
   cond_broadcast (&cond_read, &block_cache_lock);
   lock_release (&block_cache_lock);
   
@@ -645,6 +652,24 @@ block_cache_synchronize ()
     
   lock_release (&block_cache_lock);
 }
+
+void *
+buffer_cache_read_inode (struct block *fs_device, block_sector_t sector)
+{
+  struct block_cache_elem * bce = NULL;
+  void *block = NULL;
+  
+  bce = buffer_cache_read (fs_device, sector, NULL);
+  if (bce) 
+    {
+      block = bce->block;
+      // inode_validate_data (sector);
+    }
+    
+    
+  return block;
+}
+
 
 /* Debug function to display information about a buffer cache element */
 void 

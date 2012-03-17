@@ -18,6 +18,11 @@ off_t inode_read_at (struct inode *, void *, off_t size, off_t offset);
 off_t inode_write_at (struct inode *, const void *, off_t size, off_t offset);
 void inode_deny_write (struct inode *);
 void inode_allow_write (struct inode *);
-off_t inode_length (const struct inode *);
+// off_t inode_length (const struct inode *);
+off_t inode_length (struct inode *);
+void inode_clear_data (block_sector_t sector);
+void inode_get_data (struct inode *inode);
+void inode_validate_data (block_sector_t sector);
+void inode_update_data (block_sector_t sector, void * data);
 
 #endif /* filesys/inode.h */

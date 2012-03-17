@@ -45,5 +45,6 @@ struct block_cache_elem *buffer_cache_read_ofs (struct block *fs_device, block_s
 void block_cache_mark_active (struct block_cache_elem * bce, struct lock * block_cache_lock);
 struct block_cache_elem *block_cache_add (block_sector_t sector, struct lock * block_cache_lock);
 struct block_cache_elem *block_cache_find (block_sector_t sector, struct lock * block_cache_lock);
+void *buffer_cache_read_inode (struct block *fs_device, block_sector_t sector);
 
 #endif /* filesys/block_cache.h */

@@ -250,8 +250,8 @@ static struct list_elem * clock_hand_le;
 >> C2: Describe how your cache replacement algorithm chooses a cache
 >> block to evict.
 We are using a modified clock algorithm.  The buffer cache elements are stored in the block_cache_clock_elem_queue.  The queue is clock hand traverses the queue to find the next cache element to evict.  The criteria for eviction is:
-1) Not accessed (which is set every time the block is hit by a read, read-ahead, or write)
-2) Not pinned (aka, not actively reading, writing, or evicting data to disk)
+1) Not pinned (aka, not actively reading, writing, or evicting data to disk)
+2) Not accessed (which is set every time the block is hit by a read, read-ahead, or write.  If it accessed, mark is as not accessed)
 3) Skip over once if dirty
 ****4) Skip over once if inode_disk data (file structure data)
 
