@@ -51,7 +51,7 @@ filesys_init (bool format)
 void
 filesys_done (void) 
 {
-  block_cache_synchronize ();
+  block_cache_shutdown_synchronize ();
   free_map_close ();
 }
 

@@ -851,7 +851,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   ASSERT ((size + offset) < MAX_FILE_SIZE);
 
   if (inode->deny_write_cnt)
-    return 0;
+    goto exit;
 
   /* Check if file growth is needed and accordingly grow it. */
   if (((offset + size) > inode_length (inode)) &&
@@ -861,7 +861,8 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       if (!grow_file (inode, size, offset, &inode_entry)) 
         {
           printf ("Error growing file\n");
-          return 0;
+          file_growth_needed = false;
+          goto exit;
         }
     }
   else if (((offset + size) > inode_length (inode)) && 
@@ -901,6 +902,8 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       bytes_written += chunk_size;
     }
 
+exit:  
+
   if (file_growth_needed)
     {
       lock_acquire (&cur_inode_list_lock);
@@ -908,6 +911,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       cond_signal (&inode_entry->cond, &cur_inode_list_lock);
       lock_release (&cur_inode_list_lock);
     }
+
   return bytes_written;
 }
 

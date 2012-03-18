@@ -646,6 +646,61 @@ block_cache_synchronize ()
   lock_release (&block_cache_lock);
 }
 
+//!!
+/* Saves the buffer cache to disk synchronously */
+void
+block_cache_shutdown_synchronize ()
+{
+  struct list_elem * list_elem = NULL;
+  struct block_cache_elem * bce = NULL;
+  
+  lock_acquire (&block_cache_lock);
+
+  do
+    { 
+      if (list_elem)
+        {
+          list_elem = list_next (list_elem);
+          if (list_elem == list_end (&block_cache_active_queue))
+            list_elem = NULL;
+        }
+      else if (!list_empty (&block_cache_active_queue))
+        list_elem = list_begin (&block_cache_active_queue);
+
+      if (list_elem)
+        {
+          bce = list_entry (list_elem, struct block_cache_elem, list_elem);
+          
+          /* If another thread moved the list elem off the active queue, then cancel synchronize.
+             Otherwise, save the cached block if dirty */
+          if (bce->state != BCM_ACTIVE)
+            break;
+          else if (bce->dirty)
+            {
+              
+              /* Write the block back to disk */
+              bce->state = BCM_WRITING;
+              bce->pinned = true;
+              // lock_release (&block_cache_lock);
+              block_write (fs_device, bce->sector, bce->block);
+              // lock_acquire (&block_cache_lock);
+              ASSERT (bce->state == BCM_WRITING);
+              bce->pinned = false;
+              bce->state = BCM_ACTIVE;
+            
+              debug_validate_list (&block_cache_active_queue);
+              debug_validate_list (&block_cache_unused_queue);
+              debug_validate_list (&block_cache_read_queue);              
+              validate_list_element (&bce->list_elem);
+            }
+        }
+        
+    } while (list_elem);
+    
+  lock_release (&block_cache_lock);
+}
+
+
 /* Debug function to display information about a buffer cache element */
 void 
 print_buffer_cache_block (struct block_cache_elem * bce)
