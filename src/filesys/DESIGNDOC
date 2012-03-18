@@ -279,6 +279,13 @@ struct block_cache_elem
     unsigned magic;                     /* Magic number. */
   };
 
+-hash_elem is used for fast cache lookups in the block_cache_table
+-clock_elem links together all elements with valid mappings (ie, no unused or
+evicted elements). The clock algorithm walks this queue in block_cache_evict.
+-list_elem places the element on either the active_queue (all elements with
+cached data), the unused_queue (no active data), or the read_queue (cache
+elements to be read-ahead).
+
 /* Lock to synchronize accesses to cache table. */
 struct lock block_cache_lock;
 
@@ -362,7 +369,9 @@ buffer cache element will be provided (upon evicting a stale cache element, if
 needed). Subsequently, the next sector is also looked up, and a cache element
 is also provided if not found. The read-ahead cache elements are queued on the
 block_cache_read_queue. The read-ahead thread will then load the blocks for the
-queued cache elements from disk on a low-priority background thread.  If the block is requested before the read-ahead starts, the block will be removed from the read-ahead queue and the block_read will be called immediately.
+queued cache elements from disk on a low-priority background thread.  If the
+block is requested before the read-ahead starts, the block will be removed
+from the read-ahead queue and the block_read will be called immediately.
 
 ---- SYNCHRONIZATION ----
 
