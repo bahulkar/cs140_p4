@@ -14,7 +14,7 @@
 #define BLOCK_CACHE_ELEM_MAGIC 0x32323232
 
 /* Maximum number of sectors allowed in block cache. */
-#define MAX_CACHE_SECTORS 5
+#define MAX_CACHE_SECTORS 5 //!! 64
 
 /* Timer interval for periodic dirty cache block writes. */
 #define PERIODIC_WRITE_TIME_IN_SECONDS 2
