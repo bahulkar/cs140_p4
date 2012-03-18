@@ -12,6 +12,7 @@ static struct bitmap *free_map;      /* Free map, one bit per sector. */
 void
 free_map_init (void) 
 {
+  printf ("*free_map_init*\n");
   free_map = bitmap_create (block_size (fs_device));
   if (free_map == NULL)
     PANIC ("bitmap creation failed--file system device is too large");
@@ -28,13 +29,13 @@ bool
 free_map_allocate (size_t cnt, block_sector_t *sectorp)
 {
   block_sector_t sector = bitmap_scan_and_flip (free_map, 0, cnt, false);
-  if (sector != BITMAP_ERROR
-      && free_map_file != NULL
-      && !bitmap_write (free_map, free_map_file))
-    {
-      bitmap_set_multiple (free_map, sector, cnt, false); 
-      sector = BITMAP_ERROR;
-    }
+  // if (sector != BITMAP_ERROR
+  //     && free_map_file != NULL)
+  //     && !bitmap_write (free_map, free_map_file))
+  //   {
+  //     bitmap_set_multiple (free_map, sector, cnt, false); 
+  //     sector = BITMAP_ERROR;
+  //   }
   if (sector != BITMAP_ERROR)
     *sectorp = sector;
   return sector != BITMAP_ERROR;
@@ -46,13 +47,14 @@ free_map_release (block_sector_t sector, size_t cnt)
 {
   ASSERT (bitmap_all (free_map, sector, cnt));
   bitmap_set_multiple (free_map, sector, cnt, false);
-  bitmap_write (free_map, free_map_file);
+  // bitmap_write (free_map, free_map_file);
 }
 
 /* Opens the free map file and reads it from disk. */
 void
 free_map_open (void) 
 {
+  printf ("\n*free_map_open*\n");
   free_map_file = file_open (inode_open (FREE_MAP_SECTOR));
   if (free_map_file == NULL)
     PANIC ("can't open free map");
@@ -64,6 +66,9 @@ free_map_open (void)
 void
 free_map_close (void) 
 {
+  printf ("\n*free_map_close*\n");
+  if (!bitmap_write (free_map, free_map_file))
+    PANIC ("can't write free map");
   file_close (free_map_file);
 }
 
@@ -72,6 +77,8 @@ free_map_close (void)
 void
 free_map_create (void) 
 {
+  printf ("*free_map_create*\n");
+  
   /* Create inode. */
   if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map)))
     PANIC ("free map creation failed");

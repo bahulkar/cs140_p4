@@ -145,7 +145,7 @@ off_t
 file_length (struct file *file) 
 {
   ASSERT (file != NULL);
-  return inode_length (file->inode);
+  return inode_length_ext (file->inode);
 }
 
 /* Sets the current position in FILE to NEW_POS bytes from the

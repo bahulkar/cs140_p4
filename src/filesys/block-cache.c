@@ -14,7 +14,7 @@
 #define BLOCK_CACHE_ELEM_MAGIC 0x32323232
 
 /* Maximum number of sectors allowed in block cache. */
-#define MAX_CACHE_SECTORS 64
+#define MAX_CACHE_SECTORS 5
 
 /* Timer interval for periodic dirty cache block writes. */
 #define PERIODIC_WRITE_TIME_IN_SECONDS 2
@@ -50,12 +50,6 @@ struct list block_cache_clock_elem_queue;
 
 /* Block cache table. */
 struct hash block_cache_table;
-
-/* Condition when a read completes. */
-struct condition cond_read;
-
-/* Condition when a write completes. */
-struct condition cond_write;
 
 /* Condition when an element is ready for read-ahead. */
 struct condition cond_read_queue_add;
@@ -192,10 +186,12 @@ block_cache_find (block_sector_t sector, struct lock * block_cache_lock)
         bce = hash_entry (hash_e, struct block_cache_elem, hash_elem);
         
       if (bce && bce->state == BCM_WRITING) {
+        // printf("w");
         cond_wait (&cond_write, block_cache_lock);
       }
       /* Effectively checking for bce && bce->state == BCM_READING */
       else if (bce && bce->pinned) { 
+        // printf("r");
         cond_wait (&cond_read, block_cache_lock);
       }
       else {
@@ -279,7 +275,7 @@ block_cache_evict (struct lock * block_cache_lock)
         {
           ASSERT (e);
           //!!!!!! This will break.  Allows another thread to move clock handle
-          // printf ("w");
+          printf ("(ra)");
           cond_wait (&cond_read, block_cache_lock);
           e = advance_clock_hand ();
           continue;
@@ -334,7 +330,7 @@ block_cache_evict (struct lock * block_cache_lock)
             bce->pinned = false;
           }
         
-          printf ("@");
+          // printf ("@");
         
   
         /* Once done evicting, place the block on the unused queue */
@@ -481,14 +477,12 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
 
 /* Writes the provided buffer into the buffer cache */
 struct block_cache_elem *
-buffer_cache_write_ofs (struct block *fs_device, block_sector_t sector_idx, int sector_ofs, const void *buffer, int chunk_size)
-{
-  lock_acquire (&block_cache_lock);
-  
+buffer_cache_write_ofs (struct block *fs_device, block_sector_t sector_idx, int sector_ofs, const void *buffer, int chunk_size, struct lock * block_cache_lock)
+{  
   ASSERT (sector_idx < 10000)
   
   struct block_cache_elem * bce = NULL;
-  bce = block_cache_add (sector_idx, &block_cache_lock);
+  bce = block_cache_add (sector_idx, block_cache_lock);
   
   
   ASSERT (bce->state == BCM_READ || bce->state == BCM_ACTIVE);
@@ -500,9 +494,9 @@ buffer_cache_write_ofs (struct block *fs_device, block_sector_t sector_idx, int 
     {
       if (bce->state == BCM_READ)
         {
-          lock_release (&block_cache_lock);
-          buffer_cache_read (fs_device, sector_idx, bce->block);
-          lock_acquire (&block_cache_lock);
+          // lock_release (block_cache_lock);
+          buffer_cache_read (fs_device, sector_idx, bce->block, block_cache_lock);
+          // lock_acquire (block_cache_lock);
         }
     }
   else
@@ -526,31 +520,27 @@ buffer_cache_write_ofs (struct block *fs_device, block_sector_t sector_idx, int 
   debug_validate_list (&block_cache_active_queue);
   debug_validate_list (&block_cache_unused_queue);
   debug_validate_list (&block_cache_read_queue);
-  
-  lock_release (&block_cache_lock);
-  
+    
   return bce;
 }
 
 /* Writes the provided buffer into the buffer cache */
 struct block_cache_elem *
-buffer_cache_write (struct block *fs_device UNUSED, block_sector_t sector_idx, const void *buffer)
+buffer_cache_write (struct block *fs_device UNUSED, block_sector_t sector_idx, const void *buffer, struct lock * block_cache_lock)
 {
-  return buffer_cache_write_ofs (fs_device, sector_idx, 0, buffer, BLOCK_SECTOR_SIZE);  
+  return buffer_cache_write_ofs (fs_device, sector_idx, 0, buffer, BLOCK_SECTOR_SIZE, block_cache_lock);  
 }
 
 /* Reads the sector from the buffer cache into the caller's buffer */
 struct block_cache_elem *
-buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int sector_ofs, void *buffer_, int chunk_size)
-{
-  lock_acquire (&block_cache_lock);
-  
+buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int sector_ofs, void *buffer_, int chunk_size, struct lock * block_cache_lock)
+{  
   ASSERT (sector_idx < 10000);
 
   struct block_cache_elem * bce = NULL;
   uint8_t *buffer = buffer_;
   
-  bce = block_cache_add (sector_idx, &block_cache_lock);
+  bce = block_cache_add (sector_idx, block_cache_lock);
     
   ASSERT (bce->state == BCM_READ || bce->state == BCM_ACTIVE);
 
@@ -564,9 +554,9 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
       bce->state = BCM_READING;
       bce->pinned = true;
       
-      lock_release (&block_cache_lock);
+      lock_release (block_cache_lock);
       block_read (fs_device, bce->sector, bce->block);
-      lock_acquire (&block_cache_lock);
+      lock_acquire (block_cache_lock);
 
       /* Check that the block hasn't been read and/or written
          by another thread before overwriting with disk contents */
@@ -588,17 +578,16 @@ buffer_cache_read_ofs (struct block *fs_device, block_sector_t sector_idx, int s
   if (buffer)
     memcpy (buffer, bce->block + sector_ofs, chunk_size);
     
-  cond_broadcast (&cond_read, &block_cache_lock);
-  lock_release (&block_cache_lock);
-  
+  cond_broadcast (&cond_read, block_cache_lock);
+    
   return bce;
 }
 
 /* Reads the sector from the buffer cache into the caller's buffer */
 struct block_cache_elem *
-buffer_cache_read (struct block *fs_device, block_sector_t sector_idx, void *buffer)
+buffer_cache_read (struct block *fs_device, block_sector_t sector_idx, void *buffer, struct lock *block_cache_lock)
 {
-  return buffer_cache_read_ofs (fs_device, sector_idx, 0, buffer, BLOCK_SECTOR_SIZE);
+  return buffer_cache_read_ofs (fs_device, sector_idx, 0, buffer, BLOCK_SECTOR_SIZE, block_cache_lock);
 }
 
 /* Saves the buffer cache to disk asynchronously */
@@ -655,7 +644,7 @@ block_cache_synchronize ()
 }
 
 struct block_cache_elem *
-buffer_cache_read_inode (struct block *fs_device, block_sector_t sector)
+buffer_cache_read_inode (struct block *fs_device, block_sector_t sector, struct lock * block_cache_lock)
 {
   // struct block_cache_elem * bce = NULL;
   // void *block = NULL;
@@ -669,14 +658,11 @@ buffer_cache_read_inode (struct block *fs_device, block_sector_t sector)
   //   
   //   
   // return block;
-  struct block_cache_elem * bce = NULL;
-  void *block = NULL;
-  
-  bce = buffer_cache_read (fs_device, sector, NULL);  
+  struct block_cache_elem * bce = NULL;  
+  bce = buffer_cache_read (fs_device, sector, NULL, block_cache_lock);  
   ASSERT (bce);
     
   return bce;
-
 }
 
 
