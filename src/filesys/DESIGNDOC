@@ -1,8 +1,8 @@
-       	       	     +-------------------------+
-		     |		CS 140	       |
-		     | PROJECT 4: FILE SYSTEMS |
-		     |	   DESIGN DOCUMENT     |
-		     +-------------------------+
+         +-------------------------+
+         |          CS 140         |
+         | PROJECT 4: FILE SYSTEMS |
+         |     DESIGN DOCUMENT     |
+         +-------------------------+
 
 ---- GROUP ----
 
@@ -21,10 +21,81 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 >> preparing your submission, other than the Pintos documentation, course
 >> text, lecture notes, and course staff.
 
-		     INDEXED AND EXTENSIBLE FILES
-		     ============================
+         INDEXED AND EXTENSIBLE FILES
+         ============================
 
 ---- DATA STRUCTURES ----
+
+directory.c
+-----------
+/* A single directory entry. */
+struct dir_entry 
+  {
+    ...
+    bool is_file;                       /* Is file or directory */
+  };
+
+filesys.c
+---------
+/* Lock to protect list of file names. */
+struct lock cur_name_list_lock;
+
+/* List of file names being created/removed. */
+struct list cur_name_list;
+
+/* List entry for list of file names. */
+struct cur_name_list_entry
+{
+  struct list_elem elem; /* Hash table element. */
+  char file_name [NAME_MAX + 1];     /* file/directory name. */
+  block_sector_t parent_dir_sector; /* inumber of parent dir. */
+};
+
+inode.c
+-------
+/* On-disk inode.
+   Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct inode_disk
+  {
+    off_t length;                         /* File size in bytes. */
+    unsigned magic;                       /* Magic number. */
+    block_sector_t index[INDEX_ARRAY_LENGTH]; /* Index array. */
+    block_sector_t single_index;          /* Single index. */
+    block_sector_t double_index;          /* Double index. */
+  };
+
+/* Lock to protect current inode list. */
+struct lock cur_inode_list_lock;
+
+/* List of current inodes - used for synchronization. */
+struct list cur_inode_list;
+
+/* List element of current inode list. */
+struct cur_inode_list_entry
+{
+  struct list_elem elem;      /* List element. */
+  block_sector_t inumber;     /* inumber for the inode. */
+  struct condition cond;      /* cond var for synchronization. */
+  bool currently_growing;     /* file growth in progress. */
+};
+  
+thread.c
+--------
+/* Representation of an opened file. */
+struct fd_list_elem
+  {
+    ...
+    bool is_file;                       /* If fd represents file or dir.*/
+    int inumber;                        /* inumber for file/dir. */
+  };
+
+struct thread
+  {
+    ...
+    block_sector_t pwd_sector;          /* Sector where pwd is stored. */
+    ...
+  };
+
 
 >> A1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
@@ -95,13 +166,13 @@ This design has the following advantages:
 2. It allows for file growth without fragmentation.
 3. It allows accesses of files unto (124 * 512) bytes without any need
 for extra indirection.
-4. It allows accesses of files upto ((124 * 512) + (128 * 512))bytes with 
+4. It allows accesses of files up to ((124 * 512) + (128 * 512)) bytes with 
 only one extra level of indirection.
-5. It allows files to grow upto ((124 * 512) + (128 * 512) + (128 * (128
- * 512)))bytes.
+5. It allows files to grow up to ((124 * 512) + (128 * 512) + (128 * (128
+ * 512))) bytes.
 
-			    SUBDIRECTORIES
-			    ==============
+          SUBDIRECTORIES
+          ==============
 
 ---- DATA STRUCTURES ----
 
@@ -126,7 +197,7 @@ delimiter and we lookup the token in its parent directory, and hence
 can traverse the entire path.
 
 Absolute and relative path traversal differ only in the way that they 
-start out with different parent directories (Absolute paths have root
+start out with different parent directories (absolute paths have root
 as their parent directory, and relative paths have the current working
 directory as their parent directory). After that point, the traversal
 mechanism is the same as described above.
@@ -169,8 +240,8 @@ for '.' and '..' which permit easy relative path traversal starting from
 the current working directory.
 
 
-			     BUFFER CACHE
-			     ============
+           BUFFER CACHE
+           ============
 
 ---- DATA STRUCTURES ----
 
@@ -200,11 +271,22 @@ struct block_cache_elem
     block_sector_t sector;              /* Sector number of disk location. */
     uint8_t *block;                     /* Block data. */
     bool dirty;                         /* True if dirty. */
-    bool accessed;                      /* True after accesses. */
-    bool pinned;                        /* True when locking element for thread safety. */
+    uint8_t accessed;                   /* One for standara accesses,
+                                           two for inode accesses */
+    bool pinned;                        /* True when locking element
+                                           for thread safety. */
     enum block_cache_mode state;        /* Current state: Evicted, etc. */
     unsigned magic;                     /* Magic number. */
   };
+
+/* Lock to synchronize accesses to cache table. */
+struct lock block_cache_lock;
+
+/* Condition when a read completes. */
+struct condition cond_read;
+
+/* Condition when a write completes. */
+struct condition cond_write;
 
 /* Lock to synchronize accesses to cache table. */
 struct lock block_cache_lock;
@@ -218,71 +300,117 @@ static struct block_cache_elem block_cache_elems[MAX_CACHE_SECTORS];
 static uint8_t block_cache[MAX_CACHE_SECTORS][BLOCK_SECTOR_SIZE];
 
 /* List of cache blocks with no pending operations. */
-struct list block_cache_active_queue;
+static struct list block_cache_active_queue;
 
 /* List of empty blocks to be used for caching. */
-struct list block_cache_unused_queue;
+static struct list block_cache_unused_queue;
 
 /* List of cache blocks waiting to be filled with data from disk. */
-struct list block_cache_read_queue;
-
-/* List of cache blocks used for the eviction algorithm. */
-struct list block_cache_clock_elem_queue;
+static struct list block_cache_read_queue;
 
 /* Block cache table. */
-struct hash block_cache_table;
-
-/* Condition when a read completes. */
-struct condition cond_read;
-
-/* Condition when a write completes. */
-struct condition cond_write;
+static struct hash block_cache_table;
 
 /* Condition when an element is ready for read-ahead. */
-struct condition cond_read_queue_add;
+static struct condition cond_read_queue_add;
+
+/* Prevents multiple threads from concurrently evicting. */
+static struct lock clock_lock;
 
 /* Clock algorithm hand for eviction*/
 static struct list_elem * clock_hand_le;
 
+/* List of cache blocks used for the eviction algorithm. */
+static struct list block_cache_clock_elem_queue;
+
+inode.c
+-------
+/* In-memory inode. */
+struct inode 
+  {
+    ...
+    struct inode_disk * data;             /* Inode content. */
+    struct block_cache_elem * bce;        /* Holds the cached data content. */
+  };
 
 ---- ALGORITHMS ----
 
 >> C2: Describe how your cache replacement algorithm chooses a cache
 >> block to evict.
-We are using a modified clock algorithm.  The buffer cache elements are stored in the block_cache_clock_elem_queue.  The queue is clock hand traverses the queue to find the next cache element to evict.  The criteria for eviction is:
+We are using a modified clock algorithm. The buffer cache elements are stored
+in the block_cache_clock_elem_queue.  The queue is clock hand traverses the
+queue to find the next cache element to evict.  The criteria for eviction is:
 1) Not pinned (aka, not actively reading, writing, or evicting data to disk)
-2) Not accessed (which is set every time the block is hit by a read, read-ahead, or write.  If it accessed, mark is as not accessed)
-3) Skip over once if dirty
-****4) Skip over once if inode_disk data (file structure data)
+2) The access count is 0.
+The access count in an integer set to 1 for a data block and 2 for an inode
+every time the cache is hit for a read or write.  It is incremented once more
+the first time it is set to dirty and on subsequent cache hits. The accessed
+count will not be set for read-aheads.  The accessed count will be decremented
+once the clock hand passes to the next element.
 
 
 >> C3: Describe your implementation of write-behind.
-If a buffer cache element exists, all writes will be written directly to the cached buffer in memory.  Upon eviction, the cached block data will be written to disk and the block & buffer cache element will then be made available for the next block data to be cached.
+If a buffer cache element exists, all writes will be written directly to the
+cached buffer in memory.  Upon eviction, the cached block data will be written
+to disk and the block & buffer cache element will then be made available for
+the next block data to be cached.  For data integrity, dirty blocks and the free map are periodically saved to disk (every 2 seconds on the periodic_write_thread).  As an aside, the free map was modified to be kept in memory until the periodic writes.
 
 >> C4: Describe your implementation of read-ahead.
-Whenever a sector is read (which has a one to one mapping to blocks in Pintos) the sector/block is looked up in the buffer cache. If it doesn't exist, a new buffer cache element will be provided (upon evicting a stale cache element, if needed). Subsequently, the next sector is also looked up, and a cache element is also provided if not found. The read-ahead cache elements are queued on the block_cache_read_queue. The read-ahead thread will then load the blocks for the queued cache elements from disk on a low-priority background thread.
+Whenever a sector is read (which has a one to one mapping to blocks in Pintos)
+the sector/block is looked up in the buffer cache. If it doesn't exist, a new
+buffer cache element will be provided (upon evicting a stale cache element, if
+needed). Subsequently, the next sector is also looked up, and a cache element
+is also provided if not found. The read-ahead cache elements are queued on the
+block_cache_read_queue. The read-ahead thread will then load the blocks for the
+queued cache elements from disk on a low-priority background thread.  If the block is requested before the read-ahead starts, the block will be removed from the read-ahead queue and the block_read will be called immediately.
 
 ---- SYNCHRONIZATION ----
 
 >> C5: When one process is actively reading or writing data in a
 >> buffer cache block, how are other processes prevented from evicting
 >> that block?
-Whenever disk I/O is initiated, the buffer cache element is first pinned and then the lock is released.  Other processes check the pinned flag before manipulating the data inside of the buffer cache element.  If they need access to the element, then the other process waits for a cond_read or cond_write depending on the type of I/O (one single cond_io would have worked, but two conditions are used as a slight optimization).  For clarity, the state of the buffer cache element is also set to BCM_READING or BCM_WRITING during disk I/O.
+When a block is being copied from/to another buffer using buffer_cache_write or
+buffer_cache_read the I/O is protected by the same buffer_cache_lock that
+protects eviction.
+
+Moreover, whenever the buffer_cache_lock is released during I/O to the block
+(from either disk or inode manipulation), the buffer cache element is first
+pinned and then the lock is released.  Other processes check the pinned flag
+before manipulating the data inside of the buffer cache element.  If they need
+access to the element, then the other process waits for a cond_read or
+cond_write depending on the type of I/O (one single cond_io would have worked,
+but two conditions are used as a slight optimization).  For clarity, the state
+of the buffer cache element is also set to BCM_READING or BCM_WRITING during
+disk I/O.
 
 
 >> C6: During the eviction of a block from the cache, how are other
 >> processes prevented from attempting to access the block?
-Same as for all disk I/O.  There is a lock that is hierarchically passed to all inner-level buffer_cache_x functions.  The lock is held at all times in the buffer_cache_x functions except for during disk I/O.  To protect the element when the lock is released, the buffer cache element is pinned before the lock is released, and unpinned when the lock is restored.
+Same as for all I/O.  There is a lock that is hierarchically passed to all
+inner-level buffer_cache_x & inode_x functions that use the buffer_cache.  The
+lock is held at all times in these functions except for during disk I/O or on
+cond_broadcasts.  To protect the element when the lock is released, the buffer
+cache element is pinned before the lock is released, and unpinned when the lock
+is restored.  The other processes will wait for the eviction to complete and
+will cache miss the block when they resume.  The block will then be refetched. 
 
 ---- RATIONALE ----
 
 >> C7: Describe a file workload likely to benefit from buffer caching,
 >> and workloads likely to benefit from read-ahead and write-behind.
-Buffer caches will benefit any file workload that works repeatedly with the same blocks.  For instance when navigating a directory structure, the directory inodes are frequently reaccessed.  Read-ahead will benefit reading sequential blocks in one larger file (it will work best when the blocks are stored sequentially on disk).  Examples would include reading large spreadsheets, text files, images, movies, etc.  Write-behind will benefit workloads that involve frequently editing the contents of the same block on disk.  Examples include a user that frequently saves a document being edited, files that store system/application settings, etc.
+Buffer caches will benefit any file workload that works repeatedly with the
+same blocks.  For instance when navigating a directory structure, the directory
+inodes are frequently reaccessed.  Read-ahead will benefit reading sequential
+blocks in one larger file (it will work best when the blocks are stored
+sequentially on disk).  Examples would include reading large spreadsheets, text
+files, images, movies, etc.  Write-behind will benefit workloads that involve
+frequently editing the contents of the same block on disk.  Examples include a
+user that frequently saves a document being edited, files that store
+system/application settings, etc.
 
 
-			   SURVEY QUESTIONS
-			   ================
+         SURVEY QUESTIONS
+         ================
 
 Answering these questions is optional, but it will help us improve the
 course in future quarters.  Feel free to tell us anything you

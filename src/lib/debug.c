@@ -34,40 +34,40 @@ debug_backtrace (void)
 void
 debug_validate_list (struct list *list)
 {
-	if (list != NULL) {
-		struct list_elem *e = &list->head;
+  if (list != NULL) {
+    struct list_elem *e = &list->head;
 
-		ASSERT (e->prev == NULL);
-		while (e->next) {
-			ASSERT (e->next->prev == e);
-			e = e->next;
-		}
+    ASSERT (e->prev == NULL);
+    while (e->next) {
+      ASSERT (e->next->prev == e);
+      e = e->next;
+    }
 
-		ASSERT (e->next == NULL);
-	}
-	else {
-		printf("Error: Invalid list");
-	}
+    ASSERT (e->next == NULL);
+  }
+  else {
+    printf("Error: Invalid list");
+  }
 }
 
 void
 debug_print_list (struct list *list)
 {
 
-	if (list != NULL) {
-		struct list_elem *e = &list->head;
+  if (list != NULL) {
+    struct list_elem *e = &list->head;
 
-		ASSERT (e->prev == NULL);
-		while (e->next) {
-			printf("[%x {p=%x;n=%x}] -> ", (int)e, (int)e->prev, (int)e->next);
-			ASSERT (e->next->prev == e);
-			e = e->next;
-		}
+    ASSERT (e->prev == NULL);
+    while (e->next) {
+      printf("[%x {p=%x;n=%x}] -> ", (int)e, (int)e->prev, (int)e->next);
+      ASSERT (e->next->prev == e);
+      e = e->next;
+    }
 
-		printf("[%x {p=%x;n=%x}]\n", (int)e, (int)e->prev, (int)e->next);
-		ASSERT (e->next == NULL);
-	}
-	else {
-		printf("Error: Invalid list");
-	}
+    printf("[%x {p=%x;n=%x}]\n", (int)e, (int)e->prev, (int)e->next);
+    ASSERT (e->next == NULL);
+  }
+  else {
+    printf("Error: Invalid list");
+  }
 }

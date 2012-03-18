@@ -38,8 +38,8 @@ void debug_print_list (struct list *list);
                 PANIC ("assertion `%s' failed.", #CONDITION);   \
         }
 #define NOT_REACHED() PANIC ("executed an unreachable statement");
-#define DEBUG(fmt, ...) 	\
- 	printf("%s/%s:%d "fmt, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__);
+#define DEBUG(fmt, ...)   \
+  printf("%s/%s:%d "fmt, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__);
 
 #else
 #define ASSERT(CONDITION) ((void) 0)

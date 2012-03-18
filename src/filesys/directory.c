@@ -166,7 +166,8 @@ dir_lookup (const struct dir *dir, const char *name,
    Fails if NAME is invalid (i.e. too long) or a disk or memory
    error occurs. */
 bool
-dir_add (struct dir *dir, const char *name, block_sector_t inode_sector, bool is_file)
+dir_add (struct dir *dir, const char *name,
+         block_sector_t inode_sector, bool is_file)
 {
   struct dir_entry e;
   off_t ofs;
@@ -302,7 +303,8 @@ recursive_dir_lookup (const char *name,
 
   if (strlen (name) > MAX_FULL_PATH)
     {
-      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      printf ("Full directory paths allowed to be only up to %d chars long\n",
+               MAX_FULL_PATH);
       return false;
     }
 
@@ -362,7 +364,8 @@ make_new_directory (const char *name)
     }
   if (strlen (name) > MAX_FULL_PATH)
     {
-      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      printf ("Full directory paths allowed to be only upto  %d chars long\n",
+               MAX_FULL_PATH);
       return false;
     }
 
@@ -456,7 +459,8 @@ change_dir (const char *name)
 
   if (strlen (name) > MAX_FULL_PATH)
     {
-      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      printf ("Full directory paths allowed to be only upto  %d chars long\n",
+              MAX_FULL_PATH);
       return false;
     }
 
@@ -512,7 +516,8 @@ recursive_dir_open (const char *name)
 
   if (strlen (name) > MAX_FULL_PATH)
     {
-      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      printf ("Full directory paths allowed to be only upto  %d chars long\n",
+              MAX_FULL_PATH);
       return NULL;
     }
 
@@ -589,7 +594,8 @@ bool get_is_file (const char *name)
 
   if (strlen (name) > MAX_FULL_PATH)
     {
-      printf ("Full directory paths allowed to be only upto  %d chars long\n", MAX_FULL_PATH);
+      printf ("Full directory paths allowed to be only upto  %d chars long\n",
+              MAX_FULL_PATH);
       return false;
     }
 

@@ -12,8 +12,11 @@
 /* Partition that contains the file system. */
 struct block *fs_device;
 
-struct lock cur_name_list_lock; /* Lock to protect list of file names. */
-struct list cur_name_list; /* List of file names being created/removed. */
+/* Lock to protect list of file names. */
+struct lock cur_name_list_lock;
+
+/* List of file names being created/removed. */
+struct list cur_name_list;
 
 /* List entry for ist of file names. */
 struct cur_name_list_entry
@@ -111,13 +114,15 @@ filesys_create (const char *name, off_t initial_size)
     {
       struct cur_name_list_entry *cur_name_list_entry = NULL;
       cur_name_list_entry = list_entry (e, struct cur_name_list_entry, elem);
-      if ((cur_name_list_entry->parent_dir_sector == parent_dir_sector) && (!strcmp (file_name, cur_name_list_entry->file_name)))
+      if ((cur_name_list_entry->parent_dir_sector == parent_dir_sector)
+          && (!strcmp (file_name, cur_name_list_entry->file_name)))
         {
           dir_close (dir);
           return false;
         }
     }
-  struct cur_name_list_entry *name_entry = malloc (sizeof (struct cur_name_list_entry));
+  struct cur_name_list_entry *name_entry = NULL;
+  name_entry = malloc (sizeof (struct cur_name_list_entry));
   if (name_entry == NULL)
     {
       dir_close (dir);
@@ -255,13 +260,15 @@ filesys_remove (const char *name)
     {
       struct cur_name_list_entry *cur_name_list_entry = NULL;
       cur_name_list_entry = list_entry (e, struct cur_name_list_entry, elem);
-      if ((cur_name_list_entry->parent_dir_sector == parent_dir_sector) && (!strcmp (file_name, cur_name_list_entry->file_name)))
+      if ((cur_name_list_entry->parent_dir_sector == parent_dir_sector)
+          && (!strcmp (file_name, cur_name_list_entry->file_name)))
         {
           dir_close (dir);
           return false;
         }
     }
-  struct cur_name_list_entry *name_entry = malloc (sizeof (struct cur_name_list_entry));
+  struct cur_name_list_entry *name_entry = NULL;
+  name_entry = malloc (sizeof (struct cur_name_list_entry));
   if (name_entry == NULL)
     {
       dir_close (dir);

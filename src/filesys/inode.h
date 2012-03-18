@@ -20,11 +20,12 @@ off_t inode_read_at (struct inode *, void *, off_t size, off_t offset);
 off_t inode_write_at (struct inode *, const void *, off_t size, off_t offset);
 void inode_deny_write (struct inode *);
 void inode_allow_write (struct inode *);
-// off_t inode_length (const struct inode *);
 off_t inode_length_ext (struct inode *);
 void inode_clear_data (block_sector_t sector);
-void inode_get_data (struct inode *inode);
+void inode_start_block_cache_data_access (struct inode *inode);
 void inode_validate_data (block_sector_t sector);
-void inode_update_data (block_sector_t sector, struct block_cache_elem * bce);
+void inode_update_block_cache_data (block_sector_t sector,
+                                    struct block_cache_elem * bce);
+bool inode_is_inode (void * buffer);
 
 #endif /* filesys/inode.h */

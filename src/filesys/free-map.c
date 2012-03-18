@@ -39,7 +39,6 @@ free_map_release (block_sector_t sector, size_t cnt)
 {
   ASSERT (bitmap_all (free_map, sector, cnt));
   bitmap_set_multiple (free_map, sector, cnt, false);
-  // bitmap_write (free_map, free_map_file);
 }
 
 /* Opens the free map file and reads it from disk. */
@@ -75,6 +74,14 @@ free_map_create (void)
   free_map_file = file_open (inode_open (FREE_MAP_SECTOR));
   if (free_map_file == NULL)
     PANIC ("can't open free map");
+  if (!bitmap_write (free_map, free_map_file))
+    PANIC ("can't write free map");
+}
+
+/* Saves the free map to disk */
+void
+free_map_save (void) 
+{
   if (!bitmap_write (free_map, free_map_file))
     PANIC ("can't write free map");
 }

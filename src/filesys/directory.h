@@ -35,7 +35,6 @@ bool make_new_directory (const char *dir);
 bool change_dir (const char *dir);
 bool get_is_file (const char *name);
 struct dir *recursive_dir_open (const char *name);
-bool recursive_dir_lookup (const char *name,
-            struct inode **return_inode);
+bool recursive_dir_lookup (const char *name, struct inode **return_inode);
 
 #endif /* filesys/directory.h */

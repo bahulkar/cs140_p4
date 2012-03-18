@@ -24,7 +24,8 @@ typedef int pid_t;
 #define MAX_FILE_NAME_LENGTH 14    /* Current filesystem file name limit. */
 
 /* Number of arguments, indexed by syscall number. */
-static int lookup_table[20] = {0, 1, 1, 1, 2, 1, 1, 1, 3, 3, 2, 1, 1, 3, 3, 1, 1, 2, 1, 1};
+static int lookup_table[20] = {0, 1, 1, 1, 2, 1, 1, 1, 3, 3,
+                               2, 1, 1, 3, 3, 1, 1, 2, 1, 1};
 
 static void **pull_arguments (void *sp, int num_args);
 static int validate_stack (void **args, int num_args);
