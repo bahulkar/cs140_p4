@@ -345,7 +345,7 @@ struct inode
 >> C2: Describe how your cache replacement algorithm chooses a cache
 >> block to evict.
 We are using a modified clock algorithm. The buffer cache elements are stored
-in the block_cache_clock_elem_queue.  The queue is clock hand traverses the
+in the block_cache_clock_elem_queue.  The clock hand traverses the
 queue to find the next cache element to evict.  The criteria for eviction is:
 1) Not pinned (aka, not actively reading, writing, or evicting data to disk)
 2) The access count is 0.
