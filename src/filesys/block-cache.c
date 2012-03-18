@@ -646,25 +646,12 @@ block_cache_synchronize ()
 struct block_cache_elem *
 buffer_cache_read_inode (struct block *fs_device, block_sector_t sector, struct lock * block_cache_lock)
 {
-  // struct block_cache_elem * bce = NULL;
-  // void *block = NULL;
-  // 
-  // bce = buffer_cache_read (fs_device, sector, NULL);
-  // if (bce) 
-  //   {
-  //     block = bce->block;
-  //     // inode_validate_data (sector);
-  //   }
-  //   
-  //   
-  // return block;
   struct block_cache_elem * bce = NULL;  
   bce = buffer_cache_read (fs_device, sector, NULL, block_cache_lock);  
   ASSERT (bce);
     
   return bce;
 }
-
 
 /* Debug function to display information about a buffer cache element */
 void 

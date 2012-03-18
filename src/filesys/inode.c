@@ -1094,8 +1094,8 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       offset += chunk_size;
       bytes_written += chunk_size;
     }
-    
-exit:  
+
+exit:
   inode_finish_data (inode);
 
   if (file_growth_needed)
