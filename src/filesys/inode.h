@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include "filesys/off_t.h"
 #include "devices/block.h"
+#include "filesys/block-cache.h"
+#include "threads/synch.h"
 
 struct bitmap;
 
@@ -23,6 +25,6 @@ off_t inode_length (struct inode *);
 void inode_clear_data (block_sector_t sector);
 void inode_get_data (struct inode *inode);
 void inode_validate_data (block_sector_t sector);
-void inode_update_data (block_sector_t sector, void * data);
+void inode_update_data (block_sector_t sector, struct block_cache_elem * bce);
 
 #endif /* filesys/inode.h */

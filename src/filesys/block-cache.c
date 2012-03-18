@@ -8,12 +8,13 @@
 #include <string.h>
 #include <hash.h>
 #include <stdio.h>
+#include "filesys/inode.h"
 
 /* Identifies a block cache element. */
 #define BLOCK_CACHE_ELEM_MAGIC 0x32323232
 
 /* Maximum number of sectors allowed in block cache. */
-#define MAX_CACHE_SECTORS 256
+#define MAX_CACHE_SECTORS 64
 
 /* Timer interval for periodic dirty cache block writes. */
 #define PERIODIC_WRITE_TIME_IN_SECONDS 2
@@ -472,7 +473,7 @@ block_cache_add (block_sector_t sector, struct lock * block_cache_lock)
     bce->pinned = false;
     
   bce->accessed = true;
-  inode_update_data (bce->sector, bce->block);
+  inode_update_data (bce->sector, bce);
   
   
   return bce;
@@ -653,21 +654,29 @@ block_cache_synchronize ()
   lock_release (&block_cache_lock);
 }
 
-void *
+struct block_cache_elem *
 buffer_cache_read_inode (struct block *fs_device, block_sector_t sector)
 {
+  // struct block_cache_elem * bce = NULL;
+  // void *block = NULL;
+  // 
+  // bce = buffer_cache_read (fs_device, sector, NULL);
+  // if (bce) 
+  //   {
+  //     block = bce->block;
+  //     // inode_validate_data (sector);
+  //   }
+  //   
+  //   
+  // return block;
   struct block_cache_elem * bce = NULL;
   void *block = NULL;
   
-  bce = buffer_cache_read (fs_device, sector, NULL);
-  if (bce) 
-    {
-      block = bce->block;
-      // inode_validate_data (sector);
-    }
+  bce = buffer_cache_read (fs_device, sector, NULL);  
+  ASSERT (bce);
     
-    
-  return block;
+  return bce;
+
 }
 
 
