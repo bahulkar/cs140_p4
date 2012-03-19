@@ -23,34 +23,9 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 
          INDEXED AND EXTENSIBLE FILES
          ============================
-
----- DATA STRUCTURES ----
-
-directory.c
------------
-/* A single directory entry. */
-struct dir_entry 
-  {
-    ...
-    bool is_file;                       /* Is file or directory */
-  };
-
-filesys.c
----------
-/* Lock to protect list of file names. */
-struct lock cur_name_list_lock;
-
-/* List of file names being created/removed. */
-struct list cur_name_list;
-
-/* List entry for list of file names. */
-struct cur_name_list_entry
-{
-  struct list_elem elem; /* Hash table element. */
-  char file_name [NAME_MAX + 1];     /* file/directory name. */
-  block_sector_t parent_dir_sector; /* inumber of parent dir. */
-};
-
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
 inode.c
 -------
 /* On-disk inode.
@@ -78,28 +53,6 @@ struct cur_inode_list_entry
   struct condition cond;      /* cond var for synchronization. */
   bool currently_growing;     /* file growth in progress. */
 };
-  
-thread.c
---------
-/* Representation of an opened file. */
-struct fd_list_elem
-  {
-    ...
-    bool is_file;                       /* If fd represents file or dir.*/
-    int inumber;                        /* inumber for file/dir. */
-  };
-
-struct thread
-  {
-    ...
-    block_sector_t pwd_sector;          /* Sector where pwd is stored. */
-    ...
-  };
-
-
->> A1: Copy here the declaration of each new or changed `struct' or
->> `struct' member, global or static variable, `typedef', or
->> enumeration.  Identify the purpose of each in 25 words or less.
 
 >> A2: What is the maximum size of a file supported by your inode
 >> structure?  Show your work.
@@ -179,6 +132,48 @@ only one extra level of indirection.
 >> B1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+  
+thread.c
+--------
+/* Representation of an opened file. */
+struct fd_list_elem
+  {
+    ...
+    bool is_file;                       /* If fd represents file or dir.*/
+    int inumber;                        /* inumber for file/dir. */
+  };
+
+struct thread
+  {
+    ...
+    block_sector_t pwd_sector;          /* Sector where pwd is stored. */
+    ...
+  };
+
+directory.c
+-----------
+/* A single directory entry. */
+struct dir_entry 
+  {
+    ...
+    bool is_file;                       /* Is file or directory */
+  };
+
+filesys.c
+---------
+/* Lock to protect list of file names. */
+struct lock cur_name_list_lock;
+
+/* List of file names being created/removed. */
+struct list cur_name_list;
+
+/* List entry for list of file names. */
+struct cur_name_list_entry
+{
+  struct list_elem elem; /* Hash table element. */
+  char file_name [NAME_MAX + 1];     /* file/directory name. */
+  block_sector_t parent_dir_sector; /* inumber of parent dir. */
+};
 
 ---- ALGORITHMS ----
 
