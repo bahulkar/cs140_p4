@@ -28,6 +28,9 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 >> enumeration.  Identify the purpose of each in 25 words or less.
 inode.c
 -------
+/* Length of primary index array of an inode. */
+#define INDEX_ARRAY_LENGTH (124)
+
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
